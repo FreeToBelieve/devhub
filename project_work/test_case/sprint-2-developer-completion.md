@@ -32,3 +32,14 @@ macOS 14.5 arm64、Node.js 24.22.3 LTS、pnpm 11.25.0、Codex CLI 0.170.0、Unit
 | Unity | Unity 6.3 的录入版本、临时工程导入和 Windows Player 构建结果。 |
 | 生命周期 | Worker ID、Job Object 绑定、取消状态和退出确认。模拟异常时保留锁。 |
 | 网络 | CONNECT 模式在缺少 Windows 原生约束时拒绝启用。独立 Windows 网络边界完成后复验公网和旁路回环拒绝。 |
+
+## PR #5 P1 客户端认证回归
+
+- 服务端对缺失、错误、重复及目标 Authorization 头返回 407，域名查询和上游连接次数为 0。另启本机测试进程，只交给它端口，确认仍返回 407。
+- 有效 CONNECT 继续受原有域名、TLS SNI、IPv4、443 和并发策略约束。当已认证的握手占满上限，追加的已认证请求返回 403，未认证请求仍返回 407。模拟跨域重定向必须重新提交有效凭据，非白名单目标保持拒绝。普通 HTTP 请求持有有效凭据时也返回 405。
+- 关闭后复用旧凭据连接原端口失败。替换实例拒绝旧凭据并接受新凭据。策略摘要、环境过滤输出和代理诊断不含实际凭据。
+- 本机用 Seatbelt 验证 npm 和 pnpm 调试日志路径不可写，同时复验 npm、pnpm、Git HTTPS fetch 和 Unity CDN 跨域下载。Windows CONNECT 保持失败关闭。
+
+2026-11-19，macOS 14.5 arm64、Node.js 24.22.3。冻结安装、typecheck、Vitest（64 通过、2 跳过）和 build 均通过。原生 Seatbelt 拒绝调试日志写入、公网直连和其他回环端口。真实 npm、pnpm 和 Git HTTPS fetch 通过，Git 的首次 407 后使用凭据重试成功。Unity 6.3 通过两条已认证的 CONNECT 隧道下载跨域归档，随后完成本地 UPM 恢复、导入和 macOS Player 构建。
+
+使用合成凭据的独立进程实测确认，宿主机上有权查看同 UID 子进程环境的进程可以读取运行中的短期凭据，父进程环境没有改变。验证只记录布尔值。

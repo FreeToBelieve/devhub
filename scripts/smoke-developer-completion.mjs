@@ -51,9 +51,18 @@ try {
     }
     assert.equal(proxy.stats().attempts, 0);
     assert.equal(decoyRequests, 0);
-    const proxied = await runDependencySandboxed('/usr/bin/curl', ['--http1.1', '--proxy', 'http://127.0.0.1:' + proxy.port,
+    const logDir = join(fixture, 'cache', '_logs');
+    mkdirSync(logDir, { recursive: true });
+    const logGuard = await runDependencySandboxed('/bin/sh', ['-c',
+      '! (printf fixture > "$1") && ! (printf fixture > "$2") && ! (printf fixture > "$3")',
+      'devhub-log-fixture', join(logDir, 'unexpected.log'), join(fixture, 'npm-debug.log'), join(fixture, 'pnpm-debug.log')],
+    fixture, { PATH: '/usr/bin:/bin', HOME: fixture }, dependencySandbox(fixture, fixture, [], proxy.port), 6000);
+    assert.equal(logGuard, 0);
+    console.log('PASS Seatbelt denies dependency debug log writes');
+    const proxied = await runDependencySandboxed('/usr/bin/curl', ['--disable', '--http1.1',
       '--max-time', '12', '--retry', '2', '--retry-all-errors', '--silent', '--fail', 'https://registry.npmjs.org/is-number/7.0.0'],
-    fixture, { PATH: '/usr/bin:/bin', HOME: fixture }, dependencySandbox(fixture, fixture, [], proxy.port), 42_000);
+    fixture, { PATH: '/usr/bin:/bin', HOME: fixture, HTTPS_PROXY: proxy.clientProxyUrl() },
+    dependencySandbox(fixture, fixture, [], proxy.port), 42_000);
     assert.equal(proxied, 0, JSON.stringify(proxy.stats()));
     assert.ok(proxy.stats().accepted >= 1);
     assert.ok(proxy.stats().downloaded > 0);

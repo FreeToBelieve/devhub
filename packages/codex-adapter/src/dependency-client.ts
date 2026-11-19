@@ -29,6 +29,9 @@ export function dependencySandbox(root: string, scratch: string, runtime: readon
     '(deny file-write*)',
     '(allow file-write* ' + nodes([root, scratch, '/dev/null']) + ')',
     '(deny file-write* ' + nodes([join(root, '.git'), join(root, '.codex')]) + ')',
+    // Older npm versions can still attempt to create an on-disk error log.
+    '(deny file-write* ' + nodes([join(scratch, 'cache', '_logs')]) +
+      ' (regex #"/(npm|pnpm)-debug[^/]*[.]log$"))',
     '(deny file-read-data (regex #"/([.]env([.]|$)|[.]npmrc$|[.]netrc$|[.]git-credentials$|[.]ssh(/|$)|[.]aws(/|$)|[^/]+[.](pem|key|pfx|p12)$|credentials[.]json$)"))',
     '(allow file-read-data (literal "/etc/ssl/cert.pem") (literal "/private/etc/ssl/cert.pem"))',
   ].join('\n');
@@ -36,7 +39,13 @@ export function dependencySandbox(root: string, scratch: string, runtime: readon
 
 function run(executable: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number) {
   return new Promise<number>((accept) => {
-    const child = spawn(executable, args, { cwd, env, stdio: 'ignore' });
+    let child;
+    try {
+      child = spawn(executable, args, { cwd, env, stdio: 'ignore' });
+    } catch {
+      accept(-1);
+      return;
+    }
     const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
     child.once('error', () => { if (!child.pid) { clearTimeout(timer); accept(-1); } });
     child.once('exit', (code) => { clearTimeout(timer); accept(code ?? -1); });
@@ -92,7 +101,7 @@ export async function installDeveloperDependency(operation: DependencyClientOper
       if (!remote || !archive.test(remote)) throw new Error('DEPENDENCY_REMOTE_DENIED');
       executable = '/usr/bin/curl';
       artifact = 'devhub-upm-' + randomUUID() + '.tgz';
-      args = ['--http1.1', '--fail', '--silent', '--location', '--max-redirs', '4',
+      args = ['--disable', '--http1.1', '--fail', '--silent', '--location', '--max-redirs', '4',
         '--retry', '2', '--retry-all-errors', '--max-time', '90', '--proto', '=https',
         '--proto-redir', '=https', '--output', join(root, artifact), remote];
     } else {
@@ -104,18 +113,18 @@ export async function installDeveloperDependency(operation: DependencyClientOper
       if (packagePath.startsWith('..') || isAbsolute(packagePath)) throw new Error('DEPENDENCY_CLIENT_UNAVAILABLE');
       runtime.push(packageRoot);
       args = [cliPath, 'install', '--ignore-scripts', '--registry=https://registry.npmjs.org/',
-        ...(tool === 'npm' ? ['--no-audit', '--no-fund'] : ['--ignore-pnpmfile', '--store-dir', join(scratch, 'store')])];
+        ...(tool === 'npm' ? ['--no-audit', '--no-fund'] :
+          ['--reporter=silent', '--ignore-pnpmfile', '--store-dir', join(scratch, 'store')])];
     }
     proxy = await startDeveloperConnectProxy(undefined, operation === 'git-fetch');
-    const target = 'http://127.0.0.1:' + proxy.port;
     const userConfig = join(scratch, 'empty-user-config');
     const globalConfig = join(scratch, 'empty-global-config');
     await Promise.all([writeFile(userConfig, ''), writeFile(globalConfig, '')]);
     const environment = {
       HOME: scratch, TMPDIR: scratch, PATH: [dirname(node), '/usr/bin', '/bin', '/usr/sbin', '/sbin'].join(delimiter),
-      HTTP_PROXY: target, HTTPS_PROXY: target, http_proxy: target, https_proxy: target, NO_PROXY: '', no_proxy: '',
       npm_config_userconfig: userConfig, npm_config_globalconfig: globalConfig,
       npm_config_cache: join(scratch, 'cache'), npm_config_manage_package_manager_versions: 'false',
+      npm_config_loglevel: 'silent', npm_config_logs_max: '0', npm_config_timing: 'false',
       GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0',
     };
     const policy = dependencySandbox(root, scratch, runtime, proxy.port);
@@ -123,10 +132,15 @@ export async function installDeveloperDependency(operation: DependencyClientOper
       throw new Error('DEPENDENCY_GIT_SETUP_FAILED');
     }
     let exitCode = -1;
+    const target = proxy.clientProxyUrl();
+    const networkEnvironment = {
+      ...environment, HTTP_PROXY: target, HTTPS_PROXY: target, http_proxy: target, https_proxy: target,
+      NO_PROXY: '', no_proxy: '',
+    };
     const attempts = operation === 'git-fetch' ? dependencyClientPolicy.gitAttempts : 1;
     const timeout = operation === 'git-fetch' ? dependencyClientPolicy.gitAttemptMs : dependencyClientPolicy.timeoutMs;
     for (let attempt = 0; attempt < attempts && exitCode !== 0; attempt++) {
-      exitCode = await runDependencySandboxed(executable, args, cwd, environment, policy, timeout);
+      exitCode = await runDependencySandboxed(executable, args, cwd, networkEnvironment, policy, timeout);
     }
     if (artifact && exitCode !== 0) await rm(join(root, artifact), { force: true });
     if (artifact && exitCode === 0) {

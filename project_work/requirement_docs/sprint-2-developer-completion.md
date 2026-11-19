@@ -27,6 +27,10 @@ DevHub 先校验工作树和授权摘要。SDK Shell 和旧 OFF 模式继续关�
 
 每个依赖命令新建代理。每个 Turn 最多四次依赖命令。每个代理上限为并发 6、80 次尝试、8 MiB 上行、128 MiB 下行、7 秒握手、20 秒空闲及 90 秒隧道。批准绑定实现版本、域名、模式和预算，临时端口在批准后分配。npm 与 pnpm 禁用生命周期脚本。Git 在临时 bare 仓库抓取公共远端并校验 FETCH_HEAD，原项目 `.git` 元数据仍归 Git Adapter。
 
+代理启动后生成独立的 256-bit 随机秘密。每次 CONNECT 都要用 Basic `Proxy-Authorization` 认证，比较使用固定长度和常量时间函数。缺失、错误或重复认证头返回 407，并在域名查询和上游连接之前终止。普通 HTTP 请求返回 405。未经认证的请求不消耗有效凭据的连接尝试预算。关闭会停止监听、断开连接并清理服务端凭据缓冲区。
+
+仅需要联网的受控客户端及其必要子进程接收代理凭据。Git 初始化和 FETCH_HEAD 校验使用无代理凭据的环境。版本和认证策略纳入授权摘要，实际凭据仅留在运行时。诊断只留计数，执行结果保留退出码，客户端输出丢弃，Seatbelt 禁止 npm 和 pnpm 的常见调试日志写入。凭据不进参数、Codex 环境、数据库或审计事件。具备读取同 UID 进程环境权限的主机进程仍可看到运行中的客户端环境，该威胁需要独立 OS 用户或 VM 隔离。
+
 Unity 公共归档由受控客户端通过 CONNECT 下载，Unity Package Manager 使用 `file:` 引用从本地归档恢复。Editor 自身在同一代理沙箱内直连注册表的方案仍需完成原生进程启动和 IPC 验收。见 [Unity 本地归档依赖](https://docs.unity3d.com/6000.3/Documentation/Manual/upm-localpath.html)。
 
 ## 可选 macOS VM Runner

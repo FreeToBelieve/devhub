@@ -1,3 +1,4 @@
+import { randomBytes, timingSafeEqual } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { createServer } from 'node:http';
 import { createConnection, createServer as createSocketServer } from 'node:net';
@@ -6,11 +7,16 @@ import { Transform } from 'node:stream';
 import { developerDomains, isPublicDeveloperAddress } from './developer-network.js';
 
 export const connectPolicy = Object.freeze({
-  version: 1, bind: '127.0.0.1', port: 443, protocol: 'CONNECT-TLS-SNI',
+  version: 2, bind: '127.0.0.1', port: 443, protocol: 'CONNECT-TLS-SNI',
+  authentication: 'per-instance Basic with a 256-bit secret',
   http2: 'single-origin Git client with redirects disabled',
   domains: developerDomains, concurrency: 6, attempts: 80,
   uploadBytes: 8 * 1024 ** 2, downloadBytes: 128 * 1024 ** 2, connectMs: 7000, idleMs: 20_000, tunnelMs: 90_000,
 });
+
+const proxyUser = 'devhub';
+const authenticate = 'HTTP/1.1 407 Proxy Authentication Required\r\n' +
+  'Proxy-Authenticate: Basic realm="DevHub dependency proxy"\r\nContent-Length: 0\r\nConnection: close\r\n\r\n';
 
 function tunnelHost(authority: string) {
   const match = /^([a-z0-9.-]+):443$/i.exec(authority);
@@ -83,8 +89,23 @@ export async function startDeveloperConnectProxy(
     async (hostname) => (await lookup(hostname, { all: true, family: 4 })).map((answer) => answer.address),
   singleGitOrigin = false,
 ) {
+  const secret = randomBytes(32);
+  const expected = Buffer.from(Buffer.from(proxyUser + ':' + secret.toString('base64url')).toString('base64'), 'ascii');
+  let closing: Promise<void> | undefined;
+
+  function authenticated(headers: readonly string[] | undefined) {
+    const encoded = headers?.length === 1 ? /^Basic +([A-Za-z0-9+/=]+)$/i.exec(headers[0] ?? '')?.[1] : undefined;
+    return !closing && encoded !== undefined && encoded.length === expected.length &&
+      timingSafeEqual(Buffer.from(encoded, 'ascii'), expected);
+  }
+
+  function invalidate() {
+    secret.fill(0);
+    expected.fill(0);
+  }
+
   let inFlight = 0;
-  const stats = { attempts: 0, accepted: 0, denied: 0, authorityDenied: 0, addressDenied: 0, tlsDenied: 0,
+  const stats = { attempts: 0, accepted: 0, denied: 0, authDenied: 0, authorityDenied: 0, addressDenied: 0, tlsDenied: 0,
     uploaded: 0, downloaded: 0 };
   const sockets = new Set<Socket>();
   const server = createServer({ maxHeaderSize: 4096, headersTimeout: 5000 }, (_request, response) => {
@@ -99,6 +120,11 @@ export async function startDeveloperConnectProxy(
   });
   server.on('connect', (request, stream, head) => {
     const client = stream as Socket;
+    if (!authenticated(request.headersDistinct['proxy-authorization'])) {
+      stats.authDenied++;
+      client.end(authenticate);
+      return;
+    }
     const hostname = tunnelHost(request.url ?? '');
     const reportedHost = request.headers.host?.toLowerCase();
     if (++stats.attempts > connectPolicy.attempts || !hostname || (singleGitOrigin && hostname !== 'github.com') ||
@@ -179,10 +205,15 @@ export async function startDeveloperConnectProxy(
       client.end('HTTP/1.1 502 Bad Gateway\r\nConnection: close\r\n\r\n');
     });
   });
-  await new Promise<void>((accept, reject) => {
-    server.once('error', reject);
-    server.listen(0, connectPolicy.bind, () => { server.off('error', reject); accept(); });
-  });
+  try {
+    await new Promise<void>((accept, reject) => {
+      server.once('error', reject);
+      server.listen(0, connectPolicy.bind, () => { server.off('error', reject); accept(); });
+    });
+  } catch {
+    invalidate();
+    throw new Error('PROXY_LISTENER_UNAVAILABLE');
+  }
   const address = server.address();
   if (!address || typeof address === 'string') throw new Error('PROXY_LISTENER_UNAVAILABLE');
   // Seatbelt's local endpoint rule covers IPv6 localhost too. Reserve it without serving tunnels.
@@ -197,6 +228,7 @@ export async function startDeveloperConnectProxy(
     });
   } catch (error) {
     if (!['EADDRNOTAVAIL', 'EAFNOSUPPORT'].includes((error as NodeJS.ErrnoException).code ?? '')) {
+      invalidate();
       for (const socket of sockets) socket.destroy();
       await new Promise<void>((accept) => server.close(() => accept()));
       throw new Error('PROXY_LISTENER_UNAVAILABLE');
@@ -204,11 +236,20 @@ export async function startDeveloperConnectProxy(
   }
   return {
     port: address.port,
+    clientProxyUrl() {
+      if (closing) throw new Error('PROXY_CLOSED');
+      return 'http://' + proxyUser + ':' + secret.toString('base64url') + '@' + connectPolicy.bind + ':' + address.port;
+    },
     stats: () => ({ ...stats }),
-    async close() {
-      for (const socket of sockets) socket.destroy();
-      if (ipv6.listening) await new Promise<void>((accept) => ipv6.close(() => accept()));
-      await new Promise<void>((accept) => server.close(() => accept()));
+    close() {
+      closing ??= (async () => {
+        invalidate();
+        const stopped = new Promise<void>((accept) => server.close(() => accept()));
+        for (const socket of sockets) socket.destroy();
+        if (ipv6.listening) await new Promise<void>((accept) => ipv6.close(() => accept()));
+        await stopped;
+      })();
+      return closing;
     },
   };
 }
