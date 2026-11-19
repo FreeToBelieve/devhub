@@ -7,16 +7,18 @@ $allow = [System.Security.AccessControl.AccessControlType]::Allow
 $reparsePoint = [IO.FileAttributes]::ReparsePoint
 
 function Set-PrivateAcl([string] $ItemPath, [bool] $IsDirectory) {
-    $item = Get-Item -LiteralPath $ItemPath -Force
-    if ($item.PSIsContainer -ne $IsDirectory -or ($item.Attributes -band $reparsePoint)) {
+    $attributes = [IO.File]::GetAttributes($ItemPath)
+    $isActualDirectory = ($attributes -band [IO.FileAttributes]::Directory) -ne 0
+    if ($isActualDirectory -ne $IsDirectory -or ($attributes -band $reparsePoint)) {
         throw 'A SQLite path is not an ordinary file or directory.'
     }
+    $fileSystem = if ($IsDirectory) { [IO.Directory] } else { [IO.File] }
     $inheritance = if ($IsDirectory) { 'OICI' } else { '' }
-    $acl = Get-Acl -LiteralPath $ItemPath
+    $acl = $fileSystem::GetAccessControl($ItemPath, $access)
     $acl.SetSecurityDescriptorSddlForm(('D:P(A;{0};FA;;;{1})' -f $inheritance, $sid.Value), $access)
-    Set-Acl -LiteralPath $ItemPath -AclObject $acl
+    $fileSystem::SetAccessControl($ItemPath, $acl)
 
-    $applied = Get-Acl -LiteralPath $ItemPath
+    $applied = $fileSystem::GetAccessControl($ItemPath, $access)
     $rules = @($applied.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier]))
     if (-not $applied.AreAccessRulesProtected -or $rules.Count -ne 1 -or
         $rules[0].IdentityReference.Value -ne $sid.Value -or $rules[0].AccessControlType -ne $allow -or
@@ -30,7 +32,7 @@ if ($env:DEVHUB_SQLITE_MANAGED_DIR -eq '1') {
 } else {
     # SQLite creates rollback journals alongside the database. New files inherit the parent ACL.
     $trusted = @($sid.Value, 'S-1-5-18', 'S-1-5-32-544')
-    $parentAcl = Get-Acl -LiteralPath $directory
+    $parentAcl = [IO.Directory]::GetAccessControl($directory, $access)
     $rules = $parentAcl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
     foreach ($rule in $rules) {
         if ($rule.AccessControlType -eq $allow -and $rule.IdentityReference.Value -notin $trusted) {

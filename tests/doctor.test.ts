@@ -111,7 +111,10 @@ it('fails clearly when the OS version query fails or returns malformed data', as
 it('reports CLI JSON and uses its check results as the exit status', () => {
   const entry = fileURLToPath(new URL('../apps/runner/bin/devhub.mjs', import.meta.url));
   const result = spawnSync(process.execPath, [entry, 'doctor', '--json'], { encoding: 'utf8', timeout: 15000 });
-  const report = JSON.parse(result.stdout) as { checks: { status: string }[] };
+  const report = JSON.parse(result.stdout) as { checks: { id: string; status: string; detail: string }[] };
   expect(report.checks).toHaveLength(7);
   expect(result.status).toBe(report.checks.some((check) => check.status === 'fail') ? 1 : 0);
+  const osCheck = report.checks.find((check) => check.id === 'platform');
+  if (process.platform === 'win32') expect(osCheck?.detail).toMatch(/^Windows (?:11 client|Server|client build)/);
+  if (process.platform === 'darwin') expect(osCheck?.detail).toMatch(/^macOS \d+\.\d+/);
 }, 20000);

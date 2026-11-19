@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempDisposableSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 import { createServer } from '@devhub/hub';
 import { describe, expect, it } from 'vitest';
 
@@ -89,16 +89,18 @@ function windowsAcl(path: string, extraSid = ''): WindowsAclSnapshot {
 $ErrorActionPreference = 'Stop'
 $entry = $env:DEVHUB_TEST_ACL
 $cid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
-$acl = Get-Acl -LiteralPath $entry
+$access = [System.Security.AccessControl.AccessControlSections]::Access
+$fileSystem = if ([IO.Directory]::Exists($entry)) { [IO.Directory] } else { [IO.File] }
+$acl = $fileSystem::GetAccessControl($entry, $access)
 if ($env:DEVHUB_TEST_EXTRA_SID) {
     $descriptor = 'D:P(A;OICI;FA;;;{0})(A;OICI;GR;;;{1})' -f $cid, $env:DEVHUB_TEST_EXTRA_SID
-    $acl.SetSecurityDescriptorSddlForm($descriptor, [System.Security.AccessControl.AccessControlSections]::Access)
-    Set-Acl -LiteralPath $entry -AclObject $acl
-    $acl = Get-Acl -LiteralPath $entry
+    $acl.SetSecurityDescriptorSddlForm($descriptor, $access)
+    $fileSystem::SetAccessControl($entry, $acl)
+    $acl = $fileSystem::GetAccessControl($entry, $access)
 }
 $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityIdentifier])
 [pscustomobject]@{
-    sddl = $acl.Sddl
+    sddl = $acl.GetSecurityDescriptorSddlForm($access)
     protected = $acl.AreAccessRulesProtected
     currentSid = $cid
     allowedSids = @($rules | Where-Object { $_.AccessControlType -eq 'Allow' } |
@@ -110,7 +112,12 @@ $rules = $acl.GetAccessRules($true, $true, [System.Security.Principal.SecurityId
   ], {
     encoding: 'utf8',
     timeout: 12000,
-    env: { ...process.env, DEVHUB_TEST_ACL: path, DEVHUB_TEST_EXTRA_SID: extraSid },
+    env: {
+      ...Object.fromEntries(Object.entries(process.env).filter(([key]) => key.toLowerCase() !== 'psmodulepath')),
+      PSModulePath: join(dirname(ps), 'Modules'),
+      DEVHUB_TEST_ACL: path,
+      DEVHUB_TEST_EXTRA_SID: extraSid,
+    },
   });
   expect(result.status, result.stderr).toBe(0);
   return JSON.parse(result.stdout) as WindowsAclSnapshot;

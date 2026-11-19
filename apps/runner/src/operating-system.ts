@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import type { DoctorCheck } from '@devhub/contracts';
-import { windowsPowerShellPath } from '@devhub/security';
+import { windowsPowerShellEnvironment, windowsPowerShellPath } from '@devhub/security';
 
 type SupportedPlatform = 'darwin' | 'win32';
 const execFileAsync = promisify(execFile);
@@ -22,7 +22,7 @@ export async function readOperatingSystem(platform: SupportedPlatform): Promise<
   const { stdout } = await execFileAsync(windowsPowerShellPath(), [
     '-NoProfile', '-NonInteractive', '-Command',
     'Get-CimInstance -ClassName Win32_OperatingSystem -ErrorAction Stop | Select-Object Version,ProductType | ConvertTo-Json -Compress',
-  ], options);
+  ], { ...options, env: windowsPowerShellEnvironment() });
   const result: unknown = JSON.parse(stdout);
   if (!result || typeof result !== 'object' || !('Version' in result) || typeof result.Version !== 'string' ||
       !('ProductType' in result) || typeof result.ProductType !== 'number') {

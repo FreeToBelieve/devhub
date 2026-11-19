@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { windowsPowerShellPath } from '@devhub/security';
+import { windowsPowerShellEnvironment, windowsPowerShellPath } from '@devhub/security';
 
 const sidecars = ['-journal', '-wal', '-shm'];
 
@@ -65,7 +65,7 @@ function protectWindows(filename: string, managed: boolean, related: string[]) {
   const result = spawnSync(windowsPowerShellPath(), [
     '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
   ], {
-    env: { ...process.env, DEVHUB_SQLITE_FILE: filename, DEVHUB_SQLITE_MANAGED_DIR: managed ? '1' : '0' },
+    env: { ...windowsPowerShellEnvironment(), DEVHUB_SQLITE_FILE: filename, DEVHUB_SQLITE_MANAGED_DIR: managed ? '1' : '0' },
     encoding: 'utf8',
     windowsHide: true,
     timeout: 15000,
