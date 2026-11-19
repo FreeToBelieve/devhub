@@ -1,0 +1,26 @@
+{
+  "name": "shanhe-devhub",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "engines": {
+    "node": "24.x"
+  },
+  "packageManager": "pnpm@11.25.0",
+  "scripts": {
+    "build:ts": "tsc -b",
+    "build": "pnpm build:ts && pnpm --filter @devhub/dashboard build",
+    "typecheck": "pnpm build:ts && tsc -p apps/dashboard && tsc -p tsconfig.tests.json",
+    "test": "pnpm build:ts && vitest run",
+    "start": "node scripts/check-runtime.mjs && node apps/hub/dist/main.js",
+    "doctor": "node apps/runner/bin/devhub.mjs doctor"
+  },
+  "devDependencies": {
+    "@devhub/hub": "workspace:*",
+    "@devhub/logger": "workspace:*",
+    "@devhub/runner": "workspace:*",
+    "@types/node": "^24.0.0",
+    "typescript": "~5.9.3",
+    "vitest": "^4.1.0"
+  }
+}
