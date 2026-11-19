@@ -1,13 +1,14 @@
 import { execFile } from 'node:child_process';
 import { lstat, realpath, stat } from 'node:fs/promises';
-import { devNull } from 'node:os';
 import { join, resolve } from 'node:path';
+import { fileURLToPath } from 'node:url';
 import { promisify } from 'node:util';
 import { gitHeadSchema } from '@devhub/contracts';
 import type { ExecutionScope, WorktreeRecord } from '@devhub/contracts';
 import { sha256 } from '@devhub/security';
 
 const exec = promisify(execFile);
+const isolatedConfig = fileURLToPath(new URL('../config/readonly.gitconfig', import.meta.url));
 
 async function git(root: string, args: string[], ignoreExitOne = false): Promise<string> {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
@@ -18,7 +19,7 @@ async function git(root: string, args: string[], ignoreExitOne = false): Promise
       '-c', 'submodule.recurse=false', '-c', 'protocol.allow=never', '-C', root, ...args,
     ], {
       env: {
-        ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull, GIT_TERMINAL_PROMPT: '0',
+        ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: isolatedConfig, GIT_TERMINAL_PROMPT: '0',
         GIT_NO_LAZY_FETCH: '1', GIT_NO_REPLACE_OBJECTS: '1',
       },
       timeout: 8000,

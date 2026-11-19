@@ -1,7 +1,7 @@
 import { execFile, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempDisposableSync, readFileSync, writeFileSync } from 'node:fs';
-import { devNull, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { fileURLToPath } from 'node:url';
@@ -21,7 +21,8 @@ const host = '127.0.0.1:' + port;
 const origin = 'http://' + host;
 const gitEnv = {
   ...Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_'))),
-  GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull,
+  GIT_CONFIG_NOSYSTEM: '1',
+  GIT_CONFIG_GLOBAL: fileURLToPath(new URL('../apps/hub/config/readonly.gitconfig', import.meta.url)),
 };
 const actualPlatform = process.platform === 'darwin' || process.platform === 'win32';
 const exec = promisify(execFile);
