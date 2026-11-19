@@ -10,9 +10,20 @@ export interface WorkerInput {
 }
 
 const abort = new AbortController();
+let launched = false;
 process.on('disconnect', () => abort.abort());
 process.on('message', (message) => {
-  if (message === 'cancel') abort.abort();
+  if (message === 'cancel') {
+    abort.abort();
+    if (!launched && process.connected) {
+      process.send?.({ type: 'done', diagnostic: null }, () => process.disconnect?.());
+    }
+    return;
+  }
+  if (!launched && message && typeof message === 'object') {
+    launched = true;
+    void run(message as WorkerInput);
+  }
 });
 
 async function run(input: WorkerInput) {
@@ -38,6 +49,4 @@ async function run(input: WorkerInput) {
   }
 }
 
-process.once('message', (message) => {
-  if (message && typeof message === 'object') void run(message as WorkerInput);
-});
+process.send?.({ type: 'ready' });

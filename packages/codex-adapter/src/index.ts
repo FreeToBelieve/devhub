@@ -1,5 +1,6 @@
 import { lstat, readdir, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
@@ -22,6 +23,7 @@ interface AdapterConfiguration {
   networkMode: DeveloperNetworkMode;
   rawConfigOverrides: string[];
   dependencyDomains: readonly string[];
+  usesLocalLogin: boolean;
 }
 
 export function codexConfiguration(worktree: string, platform = process.platform,
@@ -52,6 +54,7 @@ export function codexConfiguration(worktree: string, platform = process.platform
   return {
     sdkVersion, thread, config, rawConfigOverrides, executionProfile: 'PROJECT_DEVELOPER', networkMode,
     dependencyDomains: networkMode === 'DEVELOPER_ALLOWLIST' ? developerDomains : [],
+    usesLocalLogin: process.platform === 'darwin' && process.env.DEVHUB_REUSE_LOCAL_CODEX_LOGIN === '1',
     providerProxy: providerProxyEndpoint(process.env.DEVHUB_CODEX_PROVIDER_PROXY),
   };
 }
@@ -83,7 +86,20 @@ export async function isolatedCodexHome(home: string, worktree: string): Promise
   if (inside(workspace, profile) || inside(profile, workspace)) {
     throw new Error('The Codex login profile must be separate from the worktree.');
   }
-  const auth = await profileEntry(join(profile, 'auth.json'));
+  const loginPath = join(profile, 'auth.json');
+  let auth = await profileEntry(loginPath);
+  if (auth?.isSymbolicLink() && process.platform === 'darwin' && process.env.DEVHUB_REUSE_LOCAL_CODEX_LOGIN === '1') {
+    const localHome = join(homedir(), '.codex');
+    const localDirectory = await lstat(localHome);
+    if (!localDirectory.isDirectory() || localDirectory.uid !== process.getuid?.() || (localDirectory.mode & 0o022) !== 0) {
+      throw new Error('CODEX_AUTH_FILE_NOT_PRIVATE');
+    }
+    const localAuth = join(await realpath(localHome), 'auth.json');
+    if (await realpath(loginPath) !== localAuth || inside(workspace, localAuth)) {
+      throw new Error('CODEX_AUTH_FILE_NOT_PRIVATE');
+    }
+    auth = await lstat(localAuth);
+  }
   if (auth && (!auth.isFile() || auth.nlink !== 1 || (process.platform !== 'win32' &&
     ((auth.mode & 0o077) !== 0 || auth.uid !== process.getuid?.())))) {
     throw new Error('CODEX_AUTH_FILE_NOT_PRIVATE');
