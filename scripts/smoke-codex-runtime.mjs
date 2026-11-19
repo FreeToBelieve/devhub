@@ -56,6 +56,7 @@ try {
       scope: {
         operation: 'codex.turn', mode: previous ? 'resume' : 'start', previousRunId: previous?.devhubRunId ?? null,
         sdkConfigSha256: live.sdkConfigSha256, workspaceSha256: live.workspaceSha256, promptSha256: sha256(prompt),
+        executionProfile: live.executionProfile, networkMode: live.networkMode,
       },
     }, sessionDigest, randomUUID(), true);
     const grant = store.execution.mutate({

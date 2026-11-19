@@ -4,6 +4,7 @@ import { z } from 'zod';
 import {
   executionBindingSchema, executionDetailSchema, executionRequestSchema, gitHeadSchema,
   operatorSessionSchema, runnerRecordSchema, taskSchema, worktreeRecordSchema, digestSchema, codexRunSchema,
+  developerNetworkModeSchema,
 } from '@devhub/contracts';
 import type { ExecutionRequest, ExecutionAuditEvent, ExecutionState, CodexRun } from '@devhub/contracts';
 import { request } from './api.js';
@@ -19,6 +20,8 @@ const liveSchema = worktreeRecordSchema.extend({
   baseHeadSha: gitHeadSchema,
   workspaceSha256: digestSchema.optional(),
   sdkConfigSha256: digestSchema.optional(),
+  executionProfile: z.literal('PROJECT_DEVELOPER').optional(),
+  networkMode: developerNetworkModeSchema.optional(),
 });
 const runListSchema = z.object({ runs: z.array(codexRunSchema) });
 type Session = z.infer<typeof operatorSessionSchema>;
@@ -131,9 +134,10 @@ export function Authorization() {
       const runner = catalog?.runners.find((entry) => entry.id === values.get('runner'));
       const tree = catalog?.worktrees.find((entry) => entry.worktreeId === values.get('worktree'));
       if (!task || !runner || !tree || !catalog) throw new Error('INVALID_AUTHORIZATION_INPUT');
-      const live = await request('/api/authorization/worktrees/' + tree.worktreeId, liveSchema);
       const chosenOperation = values.get('operation');
       const codexMode = chosenOperation === 'codex.start' ? 'start' : chosenOperation === 'codex.resume' ? 'resume' : null;
+      const networkMode = codexMode ? developerNetworkModeSchema.parse(values.get('network')) : 'OFF';
+      const live = await request('/api/authorization/worktrees/' + tree.worktreeId + '?network=' + networkMode, liveSchema);
       const previous = codexMode === 'resume' ? runs.find((run) => run.devhubRunId === values.get('previousRun')) : undefined;
       let scope: unknown = chosenOperation === 'workspace.write'
         ? { operation: 'workspace.write', paths: String(values.get('paths') ?? '').split(/\r?\n/).map((part) => part.trim()).filter(Boolean) }
@@ -141,12 +145,14 @@ export function Authorization() {
       if (codexMode !== null) {
         const prompt = new TextEncoder().encode(String(values.get('prompt') ?? ''));
         if (!prompt.length || prompt.length > 24_000 || !tree.codexManaged ||
+          live.executionProfile !== 'PROJECT_DEVELOPER' || live.networkMode !== networkMode ||
           (codexMode === 'resume' && previous?.worktreeId !== tree.worktreeId)) throw new Error('INVALID_AUTHORIZATION_INPUT');
         const digest = await crypto.subtle.digest('SHA-256', prompt);
         scope = {
           operation: 'codex.turn', mode: codexMode, previousRunId: previous?.devhubRunId ?? null,
           promptSha256: Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(''),
           sdkConfigSha256: live.sdkConfigSha256, workspaceSha256: live.workspaceSha256,
+          executionProfile: live.executionProfile, networkMode: live.networkMode,
         };
       }
       const binding = executionBindingSchema.safeParse({
@@ -263,6 +269,11 @@ export function Authorization() {
           <option value="codex.resume">Codex 恢复 Thread · 整个工作树</option>
         </select>
         {operation.startsWith('codex.') ? <>
+          <label htmlFor="authorization-network">Project Developer 网络范围</label>
+          <select id="authorization-network" name="network" defaultValue="OFF">
+            <option value="OFF">关闭</option>
+            <option value="DEVELOPER_ALLOWLIST">允许公共 Unity UPM、npm、GitHub 依赖下载</option>
+          </select>
           {operation === 'codex.resume' && <>
             <label htmlFor="authorization-previous-run">上一条 Codex Turn</label>
             <select id="authorization-previous-run" name="previousRun" required>

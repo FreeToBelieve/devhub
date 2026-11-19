@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import { codexEventSchema, codexRunSchema } from '@devhub/contracts';
-import type { CodexRun, CodexRunStatus, ExecutionRequest } from '@devhub/contracts';
+import type { CodexDiagnostic, CodexRun, CodexRunStatus, ExecutionRequest } from '@devhub/contracts';
 import { immediate } from './migrations.js';
 
 const columns = `id AS devhubRunId, request_id AS requestId, worktree_id AS worktreeId,
   prompt_sha256 AS promptSha256, config_sha256 AS sdkConfigSha256, thread_id AS providerThreadId,
   provider_turn_id AS providerTurnId, previous_run_id AS previousRunId, status,
-  cancel_requested AS cancelRequested, started_at AS startedAt, finished_at AS finishedAt`;
+  cancel_requested AS cancelRequested, started_at AS startedAt, finished_at AS finishedAt,
+  heartbeat_at AS heartbeatAt, exit_confirmed_at AS exitConfirmedAt, diagnostic_code AS diagnosticCode`;
+const heartbeatTimeout = 15_000;
 
 function decode(row: Record<string, unknown> | undefined): CodexRun | undefined {
   return row && codexRunSchema.parse({ ...row, cancelRequested: row.cancelRequested === 1 });
@@ -24,25 +26,27 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
       sql('INSERT INTO codex_worktrees(worktree_id) VALUES (?) ON CONFLICT DO NOTHING').run(id);
     },
     get,
-    reserveWithinClaim(request: ExecutionRequest, ownerPid = process.pid) {
+    reserveWithinClaim(request: ExecutionRequest, workerId: string) {
       const { binding } = request;
       const { scope } = binding;
-      if (request.status !== 'CLAIMED' || scope.operation !== 'codex.turn' || !manages(binding.worktreeId)) {
+      if (request.status !== 'CLAIMED' || scope.operation !== 'codex.turn' ||
+          !scope.executionProfile || !scope.networkMode || !manages(binding.worktreeId)) {
         throw new Error('The approval does not cover a managed Codex worktree.');
       }
       if (scope.mode === 'resume') {
         const previous = scope.previousRunId && get(scope.previousRunId);
         if (!previous || previous.providerThreadId === null || previous.providerThreadId !== binding.codexThreadId ||
-            previous.worktreeId !== binding.worktreeId || previous.sdkConfigSha256 !== scope.sdkConfigSha256 ||
+            previous.worktreeId !== binding.worktreeId ||
             previous.status === 'RUNNING' || previous.status === 'INTERRUPTED') {
           throw new Error('The previous Codex Thread cannot be resumed with this approval.');
         }
       }
       const id = randomUUID();
       sql(`INSERT INTO codex_runs (id, request_id, worktree_id, prompt_sha256, config_sha256, thread_id,
-        previous_run_id, status, owner_pid, started_at) VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?)`)
+        previous_run_id, status, owner_pid, started_at, worker_id, heartbeat_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?)`)
         .run(id, request.id, binding.worktreeId, scope.promptSha256, scope.sdkConfigSha256,
-          binding.codexThreadId, scope.previousRunId, ownerPid, clock());
+          binding.codexThreadId, scope.previousRunId, process.pid, clock(), workerId, clock());
       return get(id)!;
     },
     append(id: string, input: unknown) {
@@ -66,22 +70,23 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
     shouldCancel(id: string) {
       return get(id)?.cancelRequested === true;
     },
-    finish(id: string, status: Exclude<CodexRunStatus, 'RUNNING' | 'INTERRUPTED'>) {
-      sql("UPDATE codex_runs SET status=?,finished_at=? WHERE id=? AND status='RUNNING'").run(status, clock(), id);
+    heartbeat(id: string, workerId: string) {
+      return sql("UPDATE codex_runs SET heartbeat_at=? WHERE id=? AND worker_id=? AND status='RUNNING'")
+        .run(clock(), id, workerId).changes === 1;
+    },
+    finish(id: string, workerId: string, status: Exclude<CodexRunStatus, 'RUNNING' | 'INTERRUPTED'>,
+      exitConfirmed: boolean, diagnostic: CodexDiagnostic | null) {
+      const now = clock();
+      sql(`UPDATE codex_runs SET status=?,finished_at=?,exit_confirmed_at=?,diagnostic_code=?
+        WHERE id=? AND worker_id=? AND status IN ('RUNNING', 'INTERRUPTED')`)
+        .run(exitConfirmed ? status : 'INTERRUPTED', now, exitConfirmed ? now : null,
+          exitConfirmed ? diagnostic : 'PROCESS_EXIT_UNCONFIRMED', id, workerId);
       return get(id)!;
     },
     list() {
-      const running = sql("SELECT id,owner_pid AS ownerPid FROM codex_runs WHERE status='RUNNING'").all();
-      for (const row of running) {
-        try {
-          process.kill(Number(row.ownerPid), 0);
-        } catch (error) {
-          if ((error as NodeJS.ErrnoException).code === 'ESRCH') {
-            sql("UPDATE codex_runs SET status='INTERRUPTED',finished_at=? WHERE id=? AND status='RUNNING'")
-              .run(clock(), row.id!);
-          }
-        }
-      }
+      const now = clock();
+      sql(`UPDATE codex_runs SET status='INTERRUPTED',finished_at=?,diagnostic_code='WORKER_HEARTBEAT_EXPIRED'
+        WHERE status='RUNNING' AND heartbeat_at<=?`).run(now, now - heartbeatTimeout);
       return sql('SELECT ' + columns + ' FROM codex_runs ORDER BY started_at DESC, rowid DESC LIMIT 100')
         .all().map((row) => decode(row)!);
     },

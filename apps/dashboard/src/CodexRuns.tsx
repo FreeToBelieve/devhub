@@ -88,6 +88,8 @@ export function CodexRuns() {
         <dt>DevHub Run ID</dt><dd><code>{active.devhubRunId}</code></dd>
         <dt>提示词 SHA256</dt><dd><code>{active.promptSha256}</code></dd>
         <dt>配置 SHA256</dt><dd><code>{active.sdkConfigSha256}</code></dd>
+        {active.diagnosticCode && <><dt>诊断</dt><dd><code>{active.diagnosticCode}</code></dd></>}
+        {active.status === 'INTERRUPTED' && <><dt>工作树</dt><dd>锁定，等待确认执行进程退出</dd></>}
       </dl>
       {active.status === 'RUNNING' && <button className="button" disabled={cancelling || active.cancelRequested}
         onClick={() => void cancel()}>取消 Turn</button>}

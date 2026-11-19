@@ -1,40 +1,63 @@
 import { lstat, readdir, realpath } from 'node:fs/promises';
 import { isAbsolute, join, relative, sep } from 'node:path';
+import { fileURLToPath } from 'node:url';
+import { execFile } from 'node:child_process';
+import { promisify } from 'node:util';
 import { Codex } from '@openai/codex-sdk';
 import type { CodexOptions, ThreadEvent, ThreadOptions } from '@openai/codex-sdk';
-import { codexEnvironment, defaultToolNetworkPolicy, providerProxyEndpoint, sha256 } from '@devhub/security';
+import { codexEnvironment, developerDomains, providerProxyEndpoint, sha256 } from '@devhub/security';
 
 const sdkVersion = '0.170.0';
+const exec = promisify(execFile);
+const windowsProfileCheck = fileURLToPath(new URL('../windows/profile-permissions.ps1', import.meta.url));
+const brokerPath = fileURLToPath(new URL('./dependency-broker.js', import.meta.url));
+export type DeveloperNetworkMode = 'OFF' | 'DEVELOPER_ALLOWLIST';
 
 interface AdapterConfiguration {
   sdkVersion: string;
   thread: ThreadOptions;
   config: NonNullable<CodexOptions['config']>;
   providerProxy: string | null;
+  executionProfile: 'PROJECT_DEVELOPER';
+  networkMode: DeveloperNetworkMode;
+  rawConfigOverrides: string[];
+  dependencyDomains: readonly string[];
 }
 
-export function codexConfiguration(worktree: string, platform = process.platform): AdapterConfiguration {
+export function codexConfiguration(worktree: string, platform = process.platform,
+  networkMode: DeveloperNetworkMode = 'OFF'): AdapterConfiguration {
   const thread: ThreadOptions = {
-    sandboxMode: 'workspace-write',
-    approvalPolicy: 'on-request',
+    approvalPolicy: 'never',
     workingDirectory: worktree,
     skipGitRepoCheck: false,
-    networkAccessEnabled: defaultToolNetworkPolicy.enabled,
     webSearchMode: 'disabled',
     additionalDirectories: [],
   };
   const config: NonNullable<CodexOptions['config']> = {
     approvals_reviewer: 'user',
-    sandbox_workspace_write: { exclude_tmpdir_env_var: true, exclude_slash_tmp: true, writable_roots: [] },
+    default_permissions: 'PROJECT_DEVELOPER',
     shell_environment_policy: { inherit: 'none', ignore_default_excludes: false },
-    features: { apps: false, plugins: false, remote_plugin: false },
+    features: { apps: false, plugins: false, remote_plugin: false, network_proxy: false },
     ...(platform === 'win32' ? { windows: { sandbox: 'elevated' } } : {}),
+    mcp_servers: networkMode === 'DEVELOPER_ALLOWLIST' ? { devhub_dependencies: {
+      enabled: true, command: process.execPath, args: [brokerPath, worktree], required: true, tool_timeout_sec: 60,
+    } } : {},
   };
-  return { sdkVersion, thread, config, providerProxy: providerProxyEndpoint(process.env.DEVHUB_CODEX_PROVIDER_PROXY) };
+  // CLI sandbox_mode would select the legacy workspace profile instead of the native named profile.
+  const rawConfigOverrides = [
+    'permissions.PROJECT_DEVELOPER.extends=":workspace"',
+    'permissions.PROJECT_DEVELOPER.filesystem={ ":root" = "deny", ":minimal" = "read", ":tmpdir" = "deny", ":slash_tmp" = "deny" }',
+    'permissions.PROJECT_DEVELOPER.network.enabled=false',
+  ];
+  return {
+    sdkVersion, thread, config, rawConfigOverrides, executionProfile: 'PROJECT_DEVELOPER', networkMode,
+    dependencyDomains: networkMode === 'DEVELOPER_ALLOWLIST' ? developerDomains : [],
+    providerProxy: providerProxyEndpoint(process.env.DEVHUB_CODEX_PROVIDER_PROXY),
+  };
 }
 
-export function codexConfigDigest(worktree: string): string {
-  return sha256(JSON.stringify(codexConfiguration(worktree)));
+export function codexConfigDigest(worktree: string, networkMode: DeveloperNetworkMode = 'OFF'): string {
+  return sha256(JSON.stringify(codexConfiguration(worktree, process.platform, networkMode)));
 }
 
 function inside(root: string, candidate: string): boolean {
@@ -60,7 +83,24 @@ export async function isolatedCodexHome(home: string, worktree: string): Promise
   if (inside(workspace, profile) || inside(profile, workspace)) {
     throw new Error('The Codex login profile must be separate from the worktree.');
   }
-  for (const name of ['config.toml', 'rules', 'hooks', 'hooks.json', 'plugins', 'AGENTS.md', 'AGENTS.override.md']) {
+  const auth = await profileEntry(join(profile, 'auth.json'));
+  if (auth && (!auth.isFile() || auth.nlink !== 1 || (process.platform !== 'win32' &&
+    ((auth.mode & 0o077) !== 0 || auth.uid !== process.getuid?.())))) {
+    throw new Error('CODEX_AUTH_FILE_NOT_PRIVATE');
+  }
+  if (process.platform === 'win32') {
+    try {
+      const powershell = join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
+      await exec(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', windowsProfileCheck], {
+        env: { ...codexEnvironment(process.env, profile), DEVHUB_PROFILE_CHECK_ROOT: profile },
+        windowsHide: true, timeout: 8000,
+      });
+    } catch {
+      throw new Error('CODEX_PROFILE_ACL_UNVERIFIED');
+    }
+  }
+  for (const name of ['config.toml', 'requirements.toml', 'environments.toml', 'environments', '.env',
+    'rules', 'hooks', 'hooks.json', 'plugins', 'AGENTS.md', 'AGENTS.override.md']) {
     const path = await profileEntry(join(profile, name));
     if (path) throw new Error('Use a dedicated login-only Codex profile without custom configuration or extensions.');
   }
@@ -83,11 +123,12 @@ export async function streamCodexTurn(input: {
   prompt: string;
   threadId: string | null;
   signal: AbortSignal;
+  networkMode?: DeveloperNetworkMode;
 }): Promise<AsyncGenerator<ThreadEvent>> {
   const profile = await isolatedCodexHome(input.profile, input.worktree);
   input.signal.throwIfAborted();
-  const { thread, config, providerProxy } = codexConfiguration(input.worktree);
-  const sdk = new Codex({ env: codexEnvironment(process.env, profile, providerProxy), config });
+  const { thread, config, providerProxy, rawConfigOverrides } = codexConfiguration(input.worktree, process.platform, input.networkMode);
+  const sdk = new Codex({ env: codexEnvironment(process.env, profile, providerProxy), config, configOverrides: rawConfigOverrides });
   const conversation = input.threadId === null ? sdk.startThread(thread) : sdk.resumeThread(input.threadId, thread);
   return (await conversation.runStreamed(input.prompt, { signal: input.signal })).events;
 }

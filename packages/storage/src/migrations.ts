@@ -15,8 +15,8 @@ export function immediate<T>(database: DatabaseSync, operation: () => T): T {
 export function migrate(database: DatabaseSync) {
   immediate(database, () => {
     const previous = database.prepare('PRAGMA user_version').get()?.user_version;
-    if (previous === 2) return;
-    if (previous !== 0 && previous !== 1) throw new Error('Unsupported DevHub database version.');
+    if (previous === 3) return;
+    if (previous !== 0 && previous !== 1 && previous !== 2) throw new Error('Unsupported DevHub database version.');
     if (previous === 0) database.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY NOT NULL,
@@ -96,7 +96,7 @@ export function migrate(database: DatabaseSync) {
       ) STRICT;
       PRAGMA user_version = 1;
     `);
-    database.exec(`
+    if (previous !== 2) database.exec(`
       CREATE TABLE codex_worktrees (
         worktree_id TEXT PRIMARY KEY NOT NULL REFERENCES authorization_worktrees(worktree_id)
       ) STRICT;
@@ -125,6 +125,15 @@ export function migrate(database: DatabaseSync) {
       ) STRICT;
       CREATE INDEX codex_run_event_order ON codex_run_events(run_id, seq);
       PRAGMA user_version = 2;
+    `);
+    database.exec(`
+      ALTER TABLE codex_runs ADD COLUMN worker_id TEXT;
+      ALTER TABLE codex_runs ADD COLUMN heartbeat_at INTEGER;
+      ALTER TABLE codex_runs ADD COLUMN exit_confirmed_at INTEGER;
+      ALTER TABLE codex_runs ADD COLUMN diagnostic_code TEXT;
+      UPDATE codex_runs SET status='INTERRUPTED',diagnostic_code='PROCESS_EXIT_UNCONFIRMED'
+        WHERE status='RUNNING';
+      PRAGMA user_version = 3;
     `);
   });
 }
