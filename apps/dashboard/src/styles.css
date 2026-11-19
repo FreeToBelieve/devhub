@@ -232,3 +232,12 @@ details[open] .chevron { transform: rotate(225deg); }
 .git-patch .git-added { background: #dcfce7; color: #14532d; }
 .git-patch .git-removed { background: #fee2e2; color: #7f1d1d; }
 .git-blob { margin: .55rem 0 .35rem 1rem; overflow-wrap: anywhere; }
+
+.unity-runtime { display: grid; gap: 1rem; }
+.unity-environment { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: .45rem 1rem; margin: 1rem; }
+.unity-environment dd { margin: 0; overflow-wrap: anywhere; }
+.unity-environment dt { font-weight: 600; }
+.unity-run { margin: 1rem; border-top: 1px solid var(--line); padding-top: .8rem; overflow-wrap: anywhere; }
+.unity-run figure { margin: .8rem 0; }
+.unity-run img, .unity-run video { display: block; width: min(100%, 960px); max-height: 560px; object-fit: contain; }
+.unity-run pre { white-space: pre-wrap; }

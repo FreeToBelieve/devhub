@@ -35,6 +35,9 @@
     },
     {
       "path": "../../packages/git-adapter"
+    },
+    {
+      "path": "../../packages/unity-adapter"
     }
   ]
 }

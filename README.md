@@ -38,6 +38,8 @@ pnpm start
 | `DEVHUB_LOG_LEVEL` | 结构化日志级别，默认 `info` |
 | `DEVHUB_UNITY_HUB_ROOT` | 自定义 Unity Hub Editor 根目录，内含 `6000.3.28f1` 版本子目录 |
 | `DEVHUB_UNITY_PROJECT` | 可选的 Unity 工程根目录，内含 `ProjectSettings/ProjectVersion.txt` |
+| `DEVHUB_UNITY_ARTIFACT_ROOT` | 独立运行产物根目录，默认 `.devhub/unity-runs` |
+| `DEVHUB_UNITY_FFMPEG` | 可选的 FFmpeg 可执行文件绝对路径。未配置时从 `PATH` 查找 |
 
 默认数据目录 `.devhub` 和 SQLite 文件在 macOS 分别使用 `0700`、`0600`，在 Windows 使用仅当前用户 SID 的受保护 DACL。配置外部路径时，Hub 保留父目录权限并检查其是否适合 SQLite 事务文件。macOS 的数据库和直接父目录须由当前用户所有，且父目录只允许所有者写入。Windows 外部父目录的 Allow ACE 只允许当前用户、SYSTEM 和内置 Administrators。目录及数据库应位于受信任的本机文件系统。路径为链接或权限无法安全应用时，Hub 会停止启动。
 
@@ -106,6 +108,16 @@ Dashboard 的「Codex 执行」增量读取脱敏事件和诊断，可请求取�
 下载代理、运行时审批、快照和生命周期的详细边界见 [Sprint 2.3B 设计](project_work/requirement_docs/sprint-2-developer-mode.md) 和 [验收记录](project_work/test_case/sprint-2-developer-mode.md)。
 
 macOS 可在授权中心为本次 Turn 选择 `DEVELOPER_CONNECT`，运行受控 npm、pnpm、Git 和 Unity 公共归档命令。工作树秘密检测、CONNECT 网络边界及 VM Runner 方案见 [Sprint 2.3C 设计](project_work/requirement_docs/sprint-2-developer-completion.md) 和 [验收报告](project_work/test_case/sprint-2-developer-completion.md)。
+
+## Unity 6.3 运行自动化
+
+在目标机器安装 `6000.3.28f1` 和本机平台的 Build Support，激活 Editor 许可证。运行 Player 和采集 Game View 需要桌面图形会话，录制还需要支持 H.264 的 FFmpeg。将本仓库 `packages/unity-adapter/unity-package` 复制到独立测试工程的 `Packages/com.devhub.unity-automation` 并提交到源测试仓库。测试工程须安装 Unity Test Framework，场景验证须提供 Runtime bridge 使用的测试输入组件和关键对象。参考 [`scripts/unity-fixture`](scripts/unity-fixture/) 中的示例。
+
+通过 `pnpm codex-runtime worktree-create` 创建受管 Worktree。在 Dashboard 登录授权中心，进入「Unity 测试」，选择 Task、Runner 和工作树，创建申请、批准，再启动。Editor、导入与编译、EditMode、PlayMode、构建、Player 和 Game View 可以分别发起。场景路径和采集设置随申请绑定。Unity 会以本机用户身份执行受信工程的代码。
+
+在运行报告中查看 C# 诊断、测试结果、构建报告、脱敏日志和渲染媒体。失败且进程退出已确认时可为原 Codex Thread 生成提示词和新审批申请。修复完成后，重新审批 Unity 运行，通过后在「Git 管理」审查新的候选 Tree 并按原有审批流程交付。
+
+构建完成后可用 `node scripts/smoke-unity-runtime.mjs A` 到 `E` 跑对应阶段的临时工程实测。`DEVHUB_UNITY_SMOKE_ARTIFACTS` 可指定保留证据的私有目录。阶段 E 需要独立的已登录 Codex profile。详情见 [Sprint 2.5 技术设计](project_work/requirement_docs/sprint-2-unity-runtime.md) 和 [实机验收记录](project_work/test_case/sprint-2-unity-runtime.md)。
 
 ## GitHub 和 GitLab 交付
 

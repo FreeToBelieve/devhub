@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { unityPlanSchema } from './unity.js';
 
 export const executionPolicyVersion = 1;
 export const runnerPlatformSchema = z.enum(['WINDOWS', 'MACOS']);
@@ -21,6 +22,7 @@ const repoPathSchema = z.string().min(1).max(512).refine((value) => value.split(
 export const executionScopeSchema = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('workspace.write'), paths: z.array(repoPathSchema).min(1).max(16) }),
   z.strictObject({ operation: z.literal('process.run'), executable: z.literal('git'), action: z.enum(['status', 'diff-check']) }),
+  z.strictObject({ operation: z.literal('unity.run'), plan: unityPlanSchema, workspaceSha256: digestSchema, configSha256: digestSchema }),
   z.strictObject({
     operation: z.literal('codex.turn'),
     mode: z.enum(['start', 'resume']),
@@ -47,6 +49,7 @@ export const executionBindingSchema = z.strictObject({
   scope: executionScopeSchema,
   policyVersion: z.int().positive(),
 }).refine(({ codexThreadId, scope }) => {
+  if (scope.operation === 'unity.run') return codexThreadId === null;
   if (scope.operation !== 'codex.turn') return codexThreadId !== null;
   if ((scope.executionProfile === undefined) !== (scope.networkMode === undefined)) return false;
   return scope.mode === 'start'

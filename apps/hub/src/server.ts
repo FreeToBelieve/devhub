@@ -8,6 +8,8 @@ import { allowsLocalRequest } from '@devhub/security';
 import { openTaskStore } from '@devhub/storage';
 import { registerAuthorizationApi } from './authorization-api.js';
 import { gitDelivery } from './git-delivery.js';
+import { unityRuntime } from './unity-runtime.js';
+import { dirname, resolve } from 'node:path';
 
 interface ServerOptions {
   port: number;
@@ -15,6 +17,7 @@ interface ServerOptions {
   managedDataDirectory?: boolean;
   dashboardDirectory?: string;
   codexWorktreeRoot?: string;
+  unityArtifactRoot?: string;
   logger?: ReturnType<typeof createLogger>;
   clock?: () => number;
   gitDependencies?: Parameters<typeof gitDelivery>[1];
@@ -31,22 +34,35 @@ export function createServer(options: ServerOptions): FastifyInstance {
   const clock = options.clock ?? Date.now;
   const tasks = openTaskStore(options.databasePath, options.managedDataDirectory, clock);
   const git = gitDelivery(tasks, options.gitDependencies);
+  const unity = unityRuntime(tasks, options.unityArtifactRoot ?? resolve(dirname(options.databasePath), 'unity-runs'));
   let cleanupTimer: ReturnType<typeof setInterval> | undefined;
   let cleanup: Promise<void> | undefined;
+  let unityCleanupTimer: ReturnType<typeof setInterval> | undefined;
+  let unityCleanup: Promise<void> | undefined;
   function runCleanup() {
     cleanup ??= git.retryCredentialCleanup().catch(() => {
       app.log.warn({ code: 'GIT_CREDENTIAL_CLEANUP_UNAVAILABLE' }, 'Credential cleanup failed');
     }).finally(() => { cleanup = undefined; });
     return cleanup;
   }
+  function runUnityCleanup() {
+    unityCleanup ??= unity.sweep().catch(() => {
+      app.log.warn({ code: 'UNITY_ARTIFACT_CLEANUP_UNAVAILABLE' }, 'Unity artifact cleanup failed');
+    }).finally(() => { unityCleanup = undefined; });
+    return unityCleanup;
+  }
   app.addHook('onReady', async () => {
-    await runCleanup();
+    await Promise.all([runCleanup(), runUnityCleanup()]);
     cleanupTimer = setInterval(() => void runCleanup(), 1000);
     cleanupTimer.unref();
+    unityCleanupTimer = setInterval(() => void runUnityCleanup(), 60 * 60 * 1000);
+    unityCleanupTimer.unref();
   });
   app.addHook('onClose', async () => {
     clearInterval(cleanupTimer);
-    await cleanup;
+    clearInterval(unityCleanupTimer);
+    await Promise.all([cleanup, unityCleanup]);
+    await unity.close();
     tasks.close();
   });
 
@@ -91,7 +107,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return reply.code(201).header('Location', `/api/tasks/${task.id}`).send(task);
   });
 
-  registerAuthorizationApi(app, tasks, options.port, clock, git, options.codexWorktreeRoot);
+  registerAuthorizationApi(app, tasks, options.port, clock, git, unity, options.codexWorktreeRoot);
 
   app.setErrorHandler((error, request, reply) => {
     const status = error instanceof Error && 'statusCode' in error ? error.statusCode : undefined;

@@ -15,6 +15,7 @@
   "dependencies": {
     "@devhub/codex-adapter": "workspace:*",
     "@devhub/contracts": "workspace:*",
-    "@devhub/security": "workspace:*"
+    "@devhub/security": "workspace:*",
+    "@devhub/unity-adapter": "workspace:*"
   }
 }

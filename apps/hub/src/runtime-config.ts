@@ -12,6 +12,7 @@ const configSchema = z.object({
   DEVHUB_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
   DEVHUB_CODEX_HOME: z.string().trim().min(1).optional(),
   DEVHUB_CODEX_WORKTREE_ROOT: z.string().trim().min(1).default('.devhub/codex-worktrees'),
+  DEVHUB_UNITY_ARTIFACT_ROOT: z.string().trim().min(1).default('.devhub/unity-runs'),
 });
 
 export class HubConfigError extends Error {}
@@ -30,5 +31,6 @@ export function readRuntimeConfig() {
     port, databasePath, managedDataDirectory: dirname(databasePath) === resolve(workspace, '.devhub'), level,
     codexHome: config.data.DEVHUB_CODEX_HOME,
     codexWorktreeRoot: resolve(workspace, config.data.DEVHUB_CODEX_WORKTREE_ROOT),
+    unityArtifactRoot: resolve(workspace, config.data.DEVHUB_UNITY_ARTIFACT_ROOT),
   };
 }

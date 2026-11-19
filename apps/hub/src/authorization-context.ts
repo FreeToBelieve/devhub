@@ -1,6 +1,7 @@
 import { hostname, userInfo } from 'node:os';
 import type { ExecutionBinding, RunnerRecord } from '@devhub/contracts';
 import { sha256 } from '@devhub/security';
+import { unityConfiguration } from '@devhub/unity-adapter';
 import type { TaskStore } from '@devhub/storage';
 import { inspectWorktree } from './worktree.js';
 import { inspectCodexWorktree } from './codex-worktree.js';
@@ -22,6 +23,13 @@ export async function workspaceMatches(execution: TaskStore['execution'], bindin
       const live = await inspectCodexWorktree(worktree.root, binding.scope.networkMode, fresh);
       return live.repoId === binding.repoId && live.worktreeId === binding.worktreeId && live.baseHeadSha === binding.baseHeadSha &&
         live.workspaceSha256 === binding.scope.workspaceSha256 && live.sdkConfigSha256 === binding.scope.sdkConfigSha256;
+    }
+    if (binding.scope.operation === 'unity.run') {
+      const live = await inspectCodexWorktree(worktree.root, 'OFF', fresh);
+      const configuration = await unityConfiguration(worktree.root, binding.scope.plan);
+      return configuration.environment.platform === binding.platform && live.repoId === binding.repoId &&
+        live.worktreeId === binding.worktreeId && live.baseHeadSha === binding.baseHeadSha &&
+        live.workspaceSha256 === binding.scope.workspaceSha256 && configuration.configSha256 === binding.scope.configSha256;
     }
     const live = await inspectWorktree(worktree.root, binding.scope);
     return live.repoId === binding.repoId && live.worktreeId === binding.worktreeId && live.baseHeadSha === binding.baseHeadSha;

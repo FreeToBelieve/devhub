@@ -1,6 +1,7 @@
 import { accessSync, constants, readFileSync, readdirSync, statSync } from 'node:fs';
 import { posix, win32 } from 'node:path';
 import type { DoctorCheck, DoctorReport } from '@devhub/contracts';
+import { inspectUnityEnvironment } from '@devhub/unity-adapter';
 import { checkOperatingSystem, readOperatingSystem } from './operating-system.js';
 
 const requiredUnityVersion = '6000.3.28f1';
@@ -153,5 +154,6 @@ export async function inspectEnvironment(overrides: Partial<Machine> = {}): Prom
     });
   }
   checks.push(checkUnity(machine), checkUnityProject(machine));
-  return { platform, arch, checks };
+  const unity = Object.keys(overrides).length === 0 ? await inspectUnityEnvironment(machine.env.DEVHUB_UNITY_PROJECT) : undefined;
+  return { platform, arch, checks, ...(unity ? { unity } : {}) };
 }

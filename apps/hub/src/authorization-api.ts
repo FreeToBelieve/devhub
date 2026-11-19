@@ -15,6 +15,9 @@ import { GitStateError } from '@devhub/storage';
 import { registerGitApi } from './git-api.js';
 import { safeGitError } from './git-delivery.js';
 import type { gitDelivery } from './git-delivery.js';
+import { registerUnityApi } from './unity-api.js';
+import { unityFailure } from './unity-runtime.js';
+import type { unityRuntime } from './unity-runtime.js';
 
 const cookieName = 'devhub_operator';
 const bootstrapSchema = z.strictObject({ bootstrapCredential: localProofSchema });
@@ -44,6 +47,10 @@ function errorResponse(reply: FastifyReply, error: unknown) {
       error.code === 'NOT_FOUND' ? 404 : 409;
     return reply.code(status).send({ code: error.code, message: error.code });
   }
+  if (error instanceof Error && /^UNITY_[A-Z0-9_]{1,64}$/.test(error.message)) {
+    const code = unityFailure(error);
+    return reply.code(code === 'UNITY_RUN_NOT_FOUND' ? 404 : 409).send({ code, message: code });
+  }
   if (error instanceof GitProviderError || error instanceof GitStateError ||
       (error instanceof Error && (/^WORKSPACE_(?:SECRET|SNAPSHOT)_[A-Z_]+$/.test(error.message) ||
         error.message === 'GIT_SUBMODULE_WORKTREE_UNSUPPORTED'))) {
@@ -64,7 +71,7 @@ export interface AuthorizationRoutes {
 }
 
 export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore, port: number, clock: () => number,
-  git: ReturnType<typeof gitDelivery>, codexWorktreeRoot?: string) {
+  git: ReturnType<typeof gitDelivery>, unity: ReturnType<typeof unityRuntime>, codexWorktreeRoot?: string) {
   const execution = tasks.execution;
   const route = (method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, handler: (
     request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply,
@@ -165,6 +172,7 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
         (!tasks.codex.manages(binding.worktreeId) || !binding.scope.executionProfile || !binding.scope.networkMode)) {
       throw new AuthorizationError('FORBIDDEN');
     }
+    if (binding.scope.operation === 'unity.run') throw new AuthorizationError('FORBIDDEN');
     const matches = await workspaceMatches(execution, binding);
     return reply.code(201).send(execution.createRequest(binding, actor.digest, idempotencyKey, matches));
   });
@@ -205,4 +213,5 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     return reply.code(204).send();
   });
   registerGitApi({ route, session, parse, input, key }, tasks, git, codexWorktreeRoot);
+  registerUnityApi({ route, session, parse, input, key }, tasks, unity);
 }
