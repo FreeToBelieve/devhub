@@ -73,7 +73,7 @@ export async function inspectWorktree(path: string, scope?: ExecutionScope, allo
   }
   const baseHeadSha = gitHeadSchema.parse(head);
   const config = await git(root, ['config', '--null', '--list']);
-  if (config.split('\0').some((value) => /^filter\..*\.(?:clean|process)\n[^\0]/i.test(value))) {
+  if (config.split('\0').some((value) => /^filter\..*\.(?:clean|smudge|process)\n[^\0]/i.test(value))) {
     throw new Error('Worktrees with external Git filters are outside the execution policy.');
   }
   const index = await git(root, ['ls-files', '-v', '--stage', '-z']);
@@ -99,4 +99,13 @@ export async function inspectWorktree(path: string, scope?: ExecutionScope, allo
 
 export async function addDetachedWorktree(repository: string, destination: string, head: string) {
   await git(repository, ['-c', 'core.hooksPath=' + isolatedConfig, 'worktree', 'add', '--detach', '--', destination, head]);
+}
+
+export async function generatedRoots(root: string, names: readonly string[]) {
+  const paths = await git(root, ['ls-files', '-z', '--', ...names.map((name) => ':(icase,top,literal)' + name)]);
+  const occupied = new Set(paths.split('\0').map((path) => path.split('/')[0]?.toLowerCase()));
+  const patterns = names.map((name) => name + '/');
+  const ignored = await git(root, ['check-ignore', '--no-index', '--', ...patterns], true);
+  return new Set(ignored.split(/\r?\n/).map((path) => path.slice(0, -1))
+    .filter((name) => names.includes(name) && !occupied.has(name.toLowerCase())));
 }

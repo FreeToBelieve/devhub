@@ -1,7 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
-  decisionInputSchema, digestSchema, executionBindingSchema, executionPolicyVersion, localProofSchema,
+  decisionInputSchema, developerNetworkModeSchema, digestSchema, executionBindingSchema, executionPolicyVersion, localProofSchema,
   requestKeySchema, reviseTaskSchema, taskIdSchema, versionInputSchema,
 } from '@devhub/contracts';
 import { allowsLocalOrigin, csrfForSession, sha256, verifyCsrf } from '@devhub/security';
@@ -114,8 +114,11 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     session(request);
     const worktree = execution.getWorktree(parse(digestSchema, request.params.id));
     if (!worktree) throw new AuthorizationError('NOT_FOUND');
-    const inspect = tasks.codex.manages(worktree.worktreeId) ? inspectCodexWorktree : inspectWorktree;
-    const live = await inspect(worktree.root).catch(() => { throw new AuthorizationError('STALE_CONTEXT'); });
+    const { network } = parse(z.object({ network: developerNetworkModeSchema.default('OFF') }), request.query);
+    const inspection = tasks.codex.manages(worktree.worktreeId)
+      ? inspectCodexWorktree(worktree.root, network)
+      : inspectWorktree(worktree.root);
+    const live = await inspection.catch(() => { throw new AuthorizationError('STALE_CONTEXT'); });
     if (live.repoId !== worktree.repoId || live.worktreeId !== worktree.worktreeId) throw new AuthorizationError('STALE_CONTEXT');
     return live;
   });
@@ -132,7 +135,8 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     const idempotencyKey = key(request);
     const binding = input(request, executionBindingSchema);
     if (binding.scope.operation === 'workspace.write') binding.scope.paths = [...new Set(binding.scope.paths)].sort();
-    if (binding.scope.operation === 'codex.turn' && !tasks.codex.manages(binding.worktreeId)) {
+    if (binding.scope.operation === 'codex.turn' &&
+        (!tasks.codex.manages(binding.worktreeId) || !binding.scope.executionProfile || !binding.scope.networkMode)) {
       throw new AuthorizationError('FORBIDDEN');
     }
     const matches = await workspaceMatches(execution, binding);

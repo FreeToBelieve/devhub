@@ -336,6 +336,9 @@ describe('local execution authorization', () => {
     git(context.repository, 'config', 'filter.unregistered.clean', 'unregistered-executable');
     expect((await context.review(request, 'approve')).json().code).toBe('STALE_CONTEXT');
     expect(context.store.execution.getRequest(request.id)?.status).toBe('REVOKED');
+    git(context.repository, 'config', '--unset', 'filter.unregistered.clean');
+    git(context.repository, 'config', 'filter.unregistered.smudge', 'unregistered-executable');
+    await expect(inspectWorktree(context.repository)).rejects.toThrow('external Git filters');
   }, 60000);
 });
 

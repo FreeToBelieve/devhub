@@ -34,3 +34,4 @@ export function allowsLocalRequest(
   const authority = `${LOOPBACK_HOST}:${port}`;
   return host === authority && (origin === undefined || allowsLocalOrigin(origin, port));
 }
+export * from './developer-network.js';

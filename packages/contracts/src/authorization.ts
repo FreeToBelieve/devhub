@@ -8,6 +8,8 @@ export const localProofSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const revisionSchema = z.int().positive();
 export const requestKeySchema = z.string().regex(/^[A-Za-z0-9_-]{8,100}$/);
 export const codexThreadIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
+export const developerNetworkModeSchema = z.enum(['OFF', 'DEVELOPER_ALLOWLIST']);
+export type DeveloperNetworkMode = z.infer<typeof developerNetworkModeSchema>;
 
 const repoPathSchema = z.string().min(1).max(512).refine((value) => value.split('/').every((part) => (
   /^[\p{L}\p{N}._ -]{1,100}$/u.test(part) &&
@@ -26,6 +28,9 @@ export const executionScopeSchema = z.discriminatedUnion('operation', [
     promptSha256: digestSchema,
     sdkConfigSha256: digestSchema,
     workspaceSha256: digestSchema,
+    // Absent only on persisted pre-2.3B requests.
+    executionProfile: z.literal('PROJECT_DEVELOPER').optional(),
+    networkMode: developerNetworkModeSchema.optional(),
   }),
 ]);
 
@@ -41,11 +46,13 @@ export const executionBindingSchema = z.strictObject({
   platform: runnerPlatformSchema,
   scope: executionScopeSchema,
   policyVersion: z.int().positive(),
-}).refine(({ codexThreadId, scope }) => scope.operation === 'codex.turn'
-  ? scope.mode === 'start'
+}).refine(({ codexThreadId, scope }) => {
+  if (scope.operation !== 'codex.turn') return codexThreadId !== null;
+  if ((scope.executionProfile === undefined) !== (scope.networkMode === undefined)) return false;
+  return scope.mode === 'start'
     ? codexThreadId === null && scope.previousRunId === null
-    : codexThreadId !== null && scope.previousRunId !== null
-  : codexThreadId !== null, { message: 'Thread identity must match the operation.' });
+    : codexThreadId !== null && scope.previousRunId !== null;
+}, { message: 'Thread identity and developer policy must match the operation.' });
 
 export const executionStateSchema = z.enum(['PENDING', 'APPROVED', 'DENIED', 'EXPIRED', 'CLAIMED', 'REVOKED']);
 export const executionRequestSchema = z.object({

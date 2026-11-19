@@ -81,6 +81,8 @@ pnpm authorization runner-claim <runner-id> <grant-id> <version> <binding-digest
 
 使用独立的私有 Codex 登录目录，通过现有 Codex CLI 的网页登录流程登录。将同一目录设置为 `DEVHUB_CODEX_HOME`。该目录用于认证与 SDK Thread 历史，配置文件与扩展留在日常 Codex profile 中。
 
+macOS 要求目录与 `auth.json` 归当前用户所有，通常分别设置为 `0700` 和 `0600`。Windows 检查目录及认证文件 ACL，访问主体限于当前用户、SYSTEM 和内置管理员组。DevHub 只校验用户设置的权限。
+
 如果模型服务需要本机 HTTP 代理，可显式设置 `DEVHUB_CODEX_PROVIDER_PROXY` 为带端口的 `http://127.0.0.1` 地址。代理只用于模型服务传输。工具网络保持关闭，进程环境中的代理变量需要通过该配置明确选择。
 
 ```sh
@@ -89,17 +91,19 @@ pnpm authorization runner-register "本机 Runner"
 pnpm codex-runtime worktree-create "/path/to/clean/test-repo"
 ```
 
-在 Dashboard 的「授权中心」选择受管工作树和 Runner，发起并批准「Codex 新 Thread」或「Codex 恢复 Thread」。将审批时使用的同一份 UTF-8 提示词交给终端命令的标准输入。换行也属于摘要输入。Windows PowerShell 可用 `Get-Content -Raw` 配合 UTF-8 输入管道，或直接从 CMD 重定向文件。
+在 Dashboard 的「授权中心」选择受管工作树和 Runner，发起并批准「Codex 新 Thread」或「Codex 恢复 Thread」。`PROJECT_DEVELOPER` 允许读写整棵工作树，开发网络默认关闭。选择 `DEVELOPER_ALLOWLIST` 时，Codex 可通过受控工具下载公共 UPM、npm 和 GitHub 依赖。Shell 的网络保持关闭。将审批时使用的同一份 UTF-8 提示词交给终端命令的标准输入。换行也属于摘要输入。Windows PowerShell 可用 `Get-Content -Raw` 配合 UTF-8 输入管道，或直接从 CMD 重定向文件。
 
 ```text
 pnpm codex-runtime run <grant-id> <version> <binding-digest> <idempotency-key> < prompt.txt
 ```
 
-Dashboard 的「Codex 执行」增量读取脱敏事件，可请求取消。终端中也可按 Ctrl+C。每个新 Turn 都需要一条新批准。工作树发生中断且无法确认进程已退出时，保留工作树锁和审计记录，新的任务可通过 Git Adapter 创建另一工作树。
+Dashboard 的「Codex 执行」增量读取脱敏事件和诊断，可请求取消。终端中也可按 Ctrl+C。每个新 Turn 和权限变化都需要新批准。运行时使用预授权策略。工作树发生中断且无法确认进程已退出时，保留工作树锁和审计记录，新的任务可通过 Git Adapter 创建另一工作树。
 
-本阶段对已跟踪、未跟踪和忽略项中的普通文件采集申请前快照。项目需使用普通 linked worktree，避开符号链接、额外硬链接、特殊文件、子模块和仓库内 Codex 配置。默认给整个工作树工作区级写权限，Git 元数据留给 Git Adapter。
+快照包含已跟踪、未跟踪和普通忽略项。只有明确被 Git 忽略且没有已跟踪子项的根级缓存可跳过。审批预览可复用文件哈希，Runner 领取时重新流式计算源文件摘要。项目需使用普通 linked worktree，避开符号链接、额外硬链接、特殊文件、子模块和仓库内 Codex 配置。Git 元数据留给 Git Adapter。
 
 配置 `DEVHUB_CODEX_HOME` 后，可显式运行 `pnpm codex-runtime:smoke`。这会使用登录账号在临时仓库发起三次 SDK Turn。
+
+下载代理、运行时审批、快照和生命周期的详细边界见 [Sprint 2.3B 设计](project_work/requirement_docs/sprint-2-developer-mode.md) 和 [验收记录](project_work/test_case/sprint-2-developer-mode.md)。
 
 ## 开发验证
 

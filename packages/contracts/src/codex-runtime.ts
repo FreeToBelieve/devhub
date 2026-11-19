@@ -2,6 +2,11 @@ import { z } from 'zod';
 import { codexThreadIdSchema, digestSchema } from './authorization.js';
 
 export const codexRunStatusSchema = z.enum(['RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'INTERRUPTED']);
+export const codexDiagnosticSchema = z.enum([
+  'SDK_START_FAILED', 'SDK_STREAM_FAILED', 'SDK_TURN_FAILED', 'SDK_NO_TERMINAL_EVENT',
+  'SDK_PERMISSION_PROFILE_UNAVAILABLE', 'WORKER_FAILED', 'WORKER_HEARTBEAT_EXPIRED', 'PROCESS_EXIT_UNCONFIRMED',
+  'WORKER_JOB_UNAVAILABLE', 'WORKER_READY_TIMEOUT',
+]);
 export const codexRunSchema = z.object({
   devhubRunId: z.uuid(),
   requestId: z.uuid(),
@@ -15,6 +20,9 @@ export const codexRunSchema = z.object({
   cancelRequested: z.boolean(),
   startedAt: z.int(),
   finishedAt: z.int().nullable(),
+  heartbeatAt: z.int().nullable(),
+  exitConfirmedAt: z.int().nullable(),
+  diagnosticCode: codexDiagnosticSchema.nullable(),
 });
 
 export const codexEventSchema = z.strictObject({
@@ -27,7 +35,11 @@ export const codexEventSchema = z.strictObject({
     'reasoning', 'web_search', 'todo_list', 'error']).optional(),
   exitCode: z.int().optional(),
   changedFiles: z.int().nonnegative().optional(),
+  toolStatus: z.enum(['in_progress', 'completed', 'failed']).optional(),
+  toolDiagnostic: z.enum(['DESTINATION_DENIED', 'ADDRESS_DENIED', 'REDIRECT_DENIED', 'UPSTREAM_ERROR',
+    'DOWNLOAD_LIMIT', 'DEPENDENCY_TRANSFER_FAILED']).optional(),
 });
 export type CodexRun = z.infer<typeof codexRunSchema>;
 export type CodexRunStatus = z.infer<typeof codexRunStatusSchema>;
 export type CodexEvent = z.infer<typeof codexEventSchema>;
+export type CodexDiagnostic = z.infer<typeof codexDiagnosticSchema>;

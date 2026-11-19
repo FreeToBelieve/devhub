@@ -4,3 +4,5 @@ packages:
 
 engineStrict: true
 fetchTimeout: 180000
+allowBuilds:
+  koffi: false

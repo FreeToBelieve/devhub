@@ -28,7 +28,7 @@ function requestOverPipe(
       child.kill();
       reject(error);
     };
-    const timer = setTimeout(() => fail(), 45_000);
+    const timer = setTimeout(() => fail(), 58_000);
     child.once('error', () => fail());
     child.once('exit', (code) => {
       if (code !== 0 || !receipt) return fail();
@@ -61,7 +61,7 @@ export async function claimFromLocalRunner(
   const runnerProof = execution.activateRunner(runnerId, device.deviceId, device.platform);
   return requestOverPipe({ kind: 'claim', runnerId, runnerProof, claim }, async (message, connected) => {
     const request = execution.getByGrant(message.claim.grantId);
-    const matches = request ? await workspaceMatches(execution, request.binding) : false;
+    const matches = request ? await workspaceMatches(execution, request.binding, true) : false;
     if (!connected()) throw new Error('The local Runner IPC connection closed before authorization.');
     return execution.mutate({
       ...message.claim, kind: 'claim', proofDigest: sha256(message.runnerProof), runnerId: message.runnerId,

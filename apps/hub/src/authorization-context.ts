@@ -13,12 +13,13 @@ export function localDevice(): Pick<RunnerRecord, 'deviceId' | 'platform'> {
   };
 }
 
-export async function workspaceMatches(execution: TaskStore['execution'], binding: ExecutionBinding): Promise<boolean> {
+export async function workspaceMatches(execution: TaskStore['execution'], binding: ExecutionBinding, fresh = false): Promise<boolean> {
   const worktree = execution.getWorktree(binding.worktreeId);
   if (!worktree || worktree.repoId !== binding.repoId) return false;
   try {
     if (binding.scope.operation === 'codex.turn') {
-      const live = await inspectCodexWorktree(worktree.root);
+      if (!binding.scope.executionProfile || !binding.scope.networkMode) return false;
+      const live = await inspectCodexWorktree(worktree.root, binding.scope.networkMode, fresh);
       return live.repoId === binding.repoId && live.worktreeId === binding.worktreeId && live.baseHeadSha === binding.baseHeadSha &&
         live.workspaceSha256 === binding.scope.workspaceSha256 && live.sdkConfigSha256 === binding.scope.sdkConfigSha256;
     }
