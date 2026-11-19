@@ -12,6 +12,7 @@ import { executeApprovedTurn } from '../apps/hub/dist/codex-runtime.js';
 import { localDevice } from '../apps/hub/dist/authorization-context.js';
 import { openTaskStore, taskSpecDigest } from '../packages/storage/dist/index.js';
 import { sha256 } from '../packages/security/dist/index.js';
+import { installDeveloperDependency } from '../packages/codex-adapter/dist/dependency-client.js';
 
 // The native sandbox probe always uses synthesis. An optional SDK Turn uses an operator profile.
 const binary = process.env.DEVHUB_CODEX_BIN;
@@ -24,6 +25,7 @@ const logFile = join(root, 'unity.log');
 const editorVersion = process.env.DEVHUB_UNITY_VERSION ?? '6000.3.28f1';
 let localRequests = 0;
 const listener = createServer((_request, response) => { localRequests++; response.end('fixture'); });
+const baseDependencies = { 'com.unity.modules.physics': '1.0.0' };
 
 try {
   mkdirSync(join(source, 'Assets', 'Editor'), { recursive: true });
@@ -31,7 +33,16 @@ try {
   mkdirSync(join(source, 'Packages'));
   mkdirSync(join(source, 'ProjectSettings'));
   writeFileSync(join(source, 'ProjectSettings', 'ProjectVersion.txt'), 'm_EditorVersion: ' + editorVersion + '\n');
-  writeFileSync(join(source, 'Packages', 'manifest.json'), '{"dependencies":{"com.unity.modules.physics":"1.0.0"}}\n');
+  if (process.env.DEVHUB_UNITY_UPM_SMOKE === '1') {
+    const packageId = 'com.unity.nuget.newtonsoft-json';
+    const receipt = await installDeveloperDependency('upm-download', source,
+      'https://download.packages.unity.com/' + packageId + '/-/' + packageId + '-3.2.2.tgz');
+    assert.equal(receipt.exitCode, 0, JSON.stringify(receipt.proxy));
+    assert.ok(receipt.artifact && receipt.proxy.accepted >= 2);
+    baseDependencies[packageId] = 'file:../' + receipt.artifact;
+    console.log('PASS public Unity archive through revalidated CDN CONNECT ' + JSON.stringify(receipt.proxy));
+  }
+  writeFileSync(join(source, 'Packages', 'manifest.json'), JSON.stringify({ dependencies: baseDependencies }) + '\n');
   writeFileSync(join(source, '.gitignore'), '/Library/\n/Temp/\n/Obj/\n/Logs/\n/UserSettings/\n/Build/\n');
   writeFileSync(join(source, 'Assets', 'Shaders', 'Fixture.shader'), 'Shader "DevHub/Fixture" { SubShader { Pass {} } }\n');
   writeFileSync(join(source, 'Assets', 'Editor', 'DevHubFixture.cs'), `
@@ -77,7 +88,9 @@ public static class DevHubFixture {
     try {
       await exec('unity', ['run', project, '--editor-version', editorVersion, '--timeout', '240',
         '--log-file', logFile, '--no-tail', '--', '-nographics', '-executeMethod', 'DevHubFixture.' + method],
-      { env: { ...process.env, UNITY_NO_UPDATE_CHECK: '1', UNITY_NO_CRASH_REPORT: '1', UNITY_NO_AGENT_HINTS: '1' },
+      { env: { PATH: process.env.PATH, HOME: process.env.HOME, TMPDIR: process.env.TMPDIR,
+        UPM_CACHE_ROOT: join(root, 'isolated-upm-cache'), UNITY_NO_UPDATE_CHECK: '1',
+        UNITY_NO_CRASH_REPORT: '1', UNITY_NO_AGENT_HINTS: '1' },
         timeout: 250_000, maxBuffer: 256_000 });
     } catch (error) {
       const text = existsSync(logFile) ? readFileSync(logFile, 'utf8') : '';
@@ -88,6 +101,11 @@ public static class DevHubFixture {
     return readFileSync(logFile, 'utf8');
   }
   assert.match(await editor(source, 'Prepare'), /DEVHUB_FIXTURE_PREPARED/);
+  if (process.env.DEVHUB_UNITY_UPM_SMOKE === '1') {
+    const lock = JSON.parse(readFileSync(join(source, 'Packages', 'packages-lock.json'), 'utf8'));
+    assert.equal(lock.dependencies['com.unity.nuget.newtonsoft-json'].source, 'local-tarball');
+    console.log('PASS Unity Package Manager resolves public package from local CONNECT archive with empty isolated cache at launch');
+  }
   console.log('PASS Unity 6.3 seed import and serialization');
   const git = (...args) => execFileSync('git', ['-C', source, '-c', 'user.name=DevHub Fixture', '-c',
     'user.email=fixture@example.invalid', '-c', 'commit.gpgsign=false', '-c', 'core.hooksPath=disabled-fixture-hooks',
@@ -123,7 +141,7 @@ public static class DevHubFixture {
     '/usr/bin/sed -i "" "s@DevHub/Fixture@DevHub/Modified@" Assets/Shaders/Fixture.shader',
     '/usr/bin/sed -i "" "s/productName:.*/productName: DevHubSprint23B/" ProjectSettings/ProjectSettings.asset',
     "cat > Packages/manifest.json <<'MANIFEST'",
-    '{"dependencies":{"com.unity.modules.physics":"1.0.0","com.unity.modules.animation":"1.0.0"}}',
+    JSON.stringify({ dependencies: { ...baseDependencies, 'com.unity.modules.animation': '1.0.0' } }),
     'MANIFEST',
     'printf "%s\\n" "using UnityEngine; public sealed class FixtureBehavior : MonoBehaviour {}" > Assets/FixtureBehavior.cs',
     'printf "\\n# DevHub fixture\\n" >> Assets/Shaders/Fixture.shader.meta',

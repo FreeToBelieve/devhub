@@ -34,6 +34,9 @@ const stateNames: Record<ExecutionState, string> = {
 const messages: Record<string, string> = {
   UNAUTHENTICATED: '登录已失效，或启动凭据已使用、过期。',
   STALE_CONTEXT: '任务规范或 Git 工作树已变化。请重新核对后发起申请。',
+  WORKSPACE_SECRET_DETECTED: '工作树包含受保护的秘密文件或认证配置。移出后重新申请。',
+  WORKSPACE_SECRET_SCAN_LIMIT: '凭据模板或认证配置超过检查限额。',
+  PROXY_OS_CONTAINMENT_UNAVAILABLE: '当前系统无法约束 CONNECT 客户端网络。',
   VERSION_CONFLICT: '申请已更新。请刷新并审查最新状态。',
   STATE_CONFLICT: '当前状态不允许该操作。',
   INVALID_AUTHORIZATION_INPUT: '请检查任务、线程 ID 和操作参数。',
@@ -273,6 +276,7 @@ export function Authorization() {
           <select id="authorization-network" name="network" defaultValue="OFF">
             <option value="OFF">关闭</option>
             <option value="DEVELOPER_ALLOWLIST">允许公共 Unity UPM、npm、GitHub 依赖下载</option>
+            <option value="DEVELOPER_CONNECT">macOS 受控依赖客户端 · CONNECT</option>
           </select>
           {operation === 'codex.resume' && <>
             <label htmlFor="authorization-previous-run">上一条 Codex Turn</label>

@@ -118,7 +118,11 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     const inspection = tasks.codex.manages(worktree.worktreeId)
       ? inspectCodexWorktree(worktree.root, network)
       : inspectWorktree(worktree.root);
-    const live = await inspection.catch(() => { throw new AuthorizationError('STALE_CONTEXT'); });
+    const live = await inspection.catch((error: unknown) => {
+      if (error instanceof Error && ['WORKSPACE_SECRET_DETECTED', 'WORKSPACE_SECRET_SCAN_LIMIT',
+        'PROXY_OS_CONTAINMENT_UNAVAILABLE'].includes(error.message)) throw new ApiInputError(409, error.message);
+      throw new AuthorizationError('STALE_CONTEXT');
+    });
     if (live.repoId !== worktree.repoId || live.worktreeId !== worktree.worktreeId) throw new AuthorizationError('STALE_CONTEXT');
     return live;
   });

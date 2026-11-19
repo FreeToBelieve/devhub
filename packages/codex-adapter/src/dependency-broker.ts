@@ -3,13 +3,21 @@ import { open, realpath, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { createInterface } from 'node:readline';
 import { dependencyDestination, DeveloperNetworkError, openDependency } from '@devhub/security';
+import { dependencyClientOperations, dependencyClientPolicy, installDeveloperDependency } from './dependency-client.js';
 
 const maximumBytes = 128 * 1024 ** 2;
 const maximumDownloads = 20;
 const root = await realpath(process.argv[2] ?? '');
+const connect = process.argv[3] === 'DEVELOPER_CONNECT';
+let commands = 0;
 let downloads = 0;
 let downloadedBytes = 0;
-const tool = {
+const tool = connect ? {
+  name: 'run_dependency_client',
+  description: 'Install npm or pnpm dependencies, fetch a public Git repository into temporary storage, or download a public Unity UPM archive through the confined local proxy.',
+  inputSchema: { type: 'object', additionalProperties: false, required: ['operation'],
+    properties: { operation: { type: 'string', enum: dependencyClientOperations }, remote: { type: 'string', maxLength: 1024 } } },
+} : {
   name: 'fetch_dependency',
   description: 'Download a public Unity UPM, npm, or GitHub dependency through DevHub. Returns the name and SHA256 of a new file at the worktree root.',
   inputSchema: { type: 'object', additionalProperties: false, required: ['url'],
@@ -63,9 +71,19 @@ for await (const line of createInterface({ input: process.stdin, crlfDelay: Infi
       result = { protocolVersion: '2024-11-05', capabilities: { tools: {} }, serverInfo: { name: 'devhub-dependencies', version: '1' } };
     } else if (method === 'tools/list') {
       result = { tools: [tool] };
-    } else if (method === 'tools/call' && params?.name === tool.name && typeof params.arguments?.url === 'string') {
+    } else if (method === 'tools/call' && params?.name === tool.name) {
       try {
-        result = { content: [{ type: 'text', text: JSON.stringify(await download(params.arguments.url)) }] };
+        const input = params.arguments ?? {};
+        if (connect) {
+          if (++commands > dependencyClientPolicy.maxCommands || !dependencyClientOperations.includes(input.operation) ||
+              (input.remote !== undefined && (typeof input.remote !== 'string' || input.remote.length > 1024))) {
+            throw new DeveloperNetworkError('DESTINATION_DENIED');
+          }
+          const receipt = await installDeveloperDependency(input.operation, root, input.remote);
+          result = { isError: receipt.exitCode !== 0, content: [{ type: 'text', text: JSON.stringify(receipt) }] };
+        } else if (typeof input.url === 'string') {
+          result = { content: [{ type: 'text', text: JSON.stringify(await download(input.url)) }] };
+        } else throw new DeveloperNetworkError('DESTINATION_DENIED');
       } catch (error) {
         result = { isError: true, content: [{ type: 'text',
           text: error instanceof DeveloperNetworkError ? error.code : 'DEPENDENCY_TRANSFER_FAILED' }] };

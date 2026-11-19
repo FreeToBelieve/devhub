@@ -105,6 +105,8 @@ Dashboard 的「Codex 执行」增量读取脱敏事件和诊断，可请求取�
 
 下载代理、运行时审批、快照和生命周期的详细边界见 [Sprint 2.3B 设计](project_work/requirement_docs/sprint-2-developer-mode.md) 和 [验收记录](project_work/test_case/sprint-2-developer-mode.md)。
 
+macOS 可在授权中心为本次 Turn 选择 `DEVELOPER_CONNECT`，运行受控 npm、pnpm、Git 和 Unity 公共归档命令。工作树秘密检测、CONNECT 网络边界及 VM Runner 方案见 [Sprint 2.3C 设计](project_work/requirement_docs/sprint-2-developer-completion.md) 和 [验收报告](project_work/test_case/sprint-2-developer-completion.md)。
+
 ## 开发验证
 
 ```sh

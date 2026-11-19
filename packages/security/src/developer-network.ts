@@ -5,7 +5,7 @@ import { BlockList, isIPv4 } from 'node:net';
 import { permitsDestination } from './network-policy.js';
 
 export const developerDomains = Object.freeze([
-  'packages.unity.com', 'download.packages.unity.com', 'upm-cdn.unity.com', 'upm-cdn-china.unitychina.cn',
+  'packages.unity.com', 'download.packages.unity.com', 'cdn.packages.unity.com', 'upm-cdn.unity.com', 'upm-cdn-china.unitychina.cn',
   'registry.npmjs.org', 'github.com', 'codeload.github.com',
 ]);
 
