@@ -54,8 +54,10 @@ it('reuses the profile after the SDK initializes its built-in skills', async () 
   const profile = join(temporary.path, 'profile');
   const worktree = join(temporary.path, 'worktree');
   mkdirSync(profile, { mode: 0o700 });
+  mkdirSync(worktree);
   mkdirSync(join(profile, 'skills', '.system'), { recursive: true });
-  await expect(isolatedCodexHome(profile, worktree)).resolves.toBe(realpathSync(profile));
+  await expect(isolatedCodexHome(profile, worktree)).resolves.toBe(realpathSync.native(profile));
+  await expect(isolatedCodexHome(profile, temporary.path)).rejects.toThrow('separate from the worktree');
   writeFileSync(join(profile, 'config.toml'), '');
   await expect(isolatedCodexHome(profile, worktree)).rejects.toThrow('custom configuration');
   const otherProfile = join(temporary.path, 'custom');

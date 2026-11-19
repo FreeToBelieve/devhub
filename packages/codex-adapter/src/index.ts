@@ -56,8 +56,10 @@ export async function isolatedCodexHome(home: string, worktree: string): Promise
   if (process.platform !== 'win32' && ((entry.mode & 0o077) !== 0 || entry.uid !== process.getuid?.())) {
     throw new Error('The Codex profile must be private to the current user.');
   }
-  const profile = await realpath(home);
-  if (inside(worktree, profile) || inside(profile, worktree)) throw new Error('The Codex login profile must be separate from the worktree.');
+  const [profile, workspace] = await Promise.all([realpath(home), realpath(worktree)]);
+  if (inside(workspace, profile) || inside(profile, workspace)) {
+    throw new Error('The Codex login profile must be separate from the worktree.');
+  }
   for (const name of ['config.toml', 'rules', 'hooks', 'hooks.json', 'plugins', 'AGENTS.md', 'AGENTS.override.md']) {
     const path = await profileEntry(join(profile, name));
     if (path) throw new Error('Use a dedicated login-only Codex profile without custom configuration or extensions.');
