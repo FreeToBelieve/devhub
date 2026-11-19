@@ -9,7 +9,7 @@ import { sha256 } from '@devhub/security';
 import { GitStateError, taskSpecDigest } from '@devhub/storage';
 import type { TaskStore } from '@devhub/storage';
 import { inspectCodexWorktree } from './codex-worktree.js';
-import { gitDelivery } from './git-delivery.js';
+import type { gitDelivery } from './git-delivery.js';
 import type { AuthorizationRoutes } from './authorization-api.js';
 
 const project = z.uuid();
@@ -17,9 +17,8 @@ const number = z.coerce.number().int().positive();
 const connectionInput = gitProjectInput.extend({ expectedVersion: z.int().nonnegative() });
 const projectQuery = z.strictObject({ projectId: project });
 
-export function registerGitApi(routes: AuthorizationRoutes, tasks: TaskStore, treeDirectory?: string) {
+export function registerGitApi(routes: AuthorizationRoutes, tasks: TaskStore, git: ReturnType<typeof gitDelivery>, treeDirectory?: string) {
   const { route, session, parse, input, key } = routes;
-  const git = gitDelivery(tasks);
   const projectId = (request: FastifyRequest) => parse(projectQuery, request.query).projectId;
   const changeNumber = (id: string) => parse(number, id);
   route('GET', '/api/git/connections', (request) => {
@@ -53,7 +52,8 @@ export function registerGitApi(routes: AuthorizationRoutes, tasks: TaskStore, tr
   route('GET', '/api/git/operations', (request) => {
     session(request);
     const id = projectId(request);
-    return { operations: tasks.git.operations(id), changes: tasks.git.changes(id), audit: tasks.git.events(id) };
+    return { operations: tasks.git.operations(id), changes: tasks.git.changes(id), audit: tasks.git.events(id),
+      credentialCleanup: tasks.git.cleanupStatus(id) };
   });
   route('POST', '/api/git/operations', (request) => {
     const actor = session(request, true);

@@ -15,8 +15,10 @@ export function immediate<T>(database: DatabaseSync, operation: () => T): T {
 export function migrate(database: DatabaseSync) {
   immediate(database, () => {
     const previous = database.prepare('PRAGMA user_version').get()?.user_version;
-    if (previous === 4) return;
-    if (previous !== 0 && previous !== 1 && previous !== 2 && previous !== 3) throw new Error('Unsupported DevHub database version.');
+    if (previous === 5) return;
+    if (previous !== 0 && previous !== 1 && previous !== 2 && previous !== 3 && previous !== 4) {
+      throw new Error('Unsupported DevHub database version.');
+    }
     if (previous === 0) database.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY NOT NULL,
@@ -126,7 +128,7 @@ export function migrate(database: DatabaseSync) {
       CREATE INDEX codex_run_event_order ON codex_run_events(run_id, seq);
       PRAGMA user_version = 2;
     `);
-    if (previous !== 3) database.exec(`
+    if (previous !== 3 && previous !== 4) database.exec(`
       ALTER TABLE codex_runs ADD COLUMN worker_id TEXT;
       ALTER TABLE codex_runs ADD COLUMN heartbeat_at INTEGER;
       ALTER TABLE codex_runs ADD COLUMN exit_confirmed_at INTEGER;
@@ -135,7 +137,7 @@ export function migrate(database: DatabaseSync) {
         WHERE status='RUNNING';
       PRAGMA user_version = 3;
     `);
-    database.exec(`
+    if (previous !== 4) database.exec(`
       CREATE TABLE git_providers (
         id TEXT PRIMARY KEY NOT NULL,
         kind TEXT NOT NULL CHECK (kind IN ('github','gitlab')),
@@ -220,6 +222,20 @@ export function migrate(database: DatabaseSync) {
         SELECT RAISE(ABORT, 'GIT_WORKTREE_BUSY');
       END;
       PRAGMA user_version = 4;
+    `);
+    database.exec(`
+      CREATE TABLE git_credential_cleanup (
+        credential_ref TEXT PRIMARY KEY NOT NULL REFERENCES git_credentials_refs(id),
+        next_attempt_at INTEGER NOT NULL,
+        attempts INTEGER NOT NULL DEFAULT 0 CHECK (attempts >= 0),
+        last_error_code TEXT,
+        owner TEXT,
+        lease_until INTEGER
+      ) STRICT;
+      INSERT INTO git_credential_cleanup(credential_ref, next_attempt_at)
+        SELECT r.id, 0 FROM git_credentials_refs r
+        WHERE NOT EXISTS (SELECT 1 FROM project_provider_connections c WHERE c.credential_ref=r.id);
+      PRAGMA user_version = 5;
     `);
   });
 }

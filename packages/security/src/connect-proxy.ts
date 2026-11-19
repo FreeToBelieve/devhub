@@ -106,7 +106,7 @@ export async function startDeveloperConnectProxy(
 
   let inFlight = 0;
   const stats = { attempts: 0, accepted: 0, denied: 0, authDenied: 0, authorityDenied: 0, addressDenied: 0, tlsDenied: 0,
-    uploaded: 0, downloaded: 0 };
+    upstreamConnectErrors: 0, upstreamConnectTimeouts: 0, uploaded: 0, downloaded: 0 };
   const sockets = new Set<Socket>();
   const server = createServer({ maxHeaderSize: 4096, headersTimeout: 5000 }, (_request, response) => {
     response.writeHead(405, { Connection: 'close' }).end();
@@ -170,11 +170,19 @@ export async function startDeveloperConnectProxy(
         }
         client.pause();
         upstream = createConnection({ host: address!, port: 443, family: 4 });
-        upstream.setTimeout(connectPolicy.connectMs, () => upstream?.destroy());
-        upstream.on('error', () => client.destroy());
+        let connected = false;
+        upstream.setTimeout(connectPolicy.connectMs, () => {
+          if (!connected) stats.upstreamConnectTimeouts++;
+          upstream?.destroy();
+        });
+        upstream.on('error', () => {
+          if (!connected) stats.upstreamConnectErrors++;
+          client.destroy();
+        });
         upstream.once('close', () => { if (!upstream?.readableEnded) client.destroy(); });
         upstream.once('connect', () => {
           if (client.destroyed || !upstream) return;
+          connected = true;
           stats.accepted++;
           client.setTimeout(connectPolicy.idleMs);
           upstream.setTimeout(connectPolicy.idleMs);

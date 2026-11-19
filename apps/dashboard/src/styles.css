@@ -215,3 +215,20 @@ details[open] .chevron { transform: rotate(225deg); }
 .git-record .button {
   margin-inline-start: .6rem;
 }
+
+.git-candidate { margin-block: .85rem 1.2rem; }
+.git-candidate-ids {
+  display: grid;
+  grid-template-columns: max-content minmax(0, 1fr);
+  gap: .35rem .9rem;
+  margin: .75rem 0;
+}
+.git-candidate-ids dt { font-weight: 600; }
+.git-candidate-ids dd { margin: 0; overflow-wrap: anywhere; }
+.git-candidate details { padding: .7rem 0; border-top: 1px solid var(--line); }
+.git-status { display: inline-block; min-width: 4.5em; color: var(--muted); }
+.git-patch { font-size: .86rem; background: #f6f8fa; border-radius: 6px; padding: .6rem 0; }
+.git-patch span { display: block; padding-inline: .65rem; }
+.git-patch .git-added { background: #dcfce7; color: #14532d; }
+.git-patch .git-removed { background: #fee2e2; color: #7f1d1d; }
+.git-blob { margin: .55rem 0 .35rem 1rem; overflow-wrap: anywhere; }

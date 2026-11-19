@@ -7,6 +7,7 @@ import { inspectEnvironment } from '@devhub/runner';
 import { allowsLocalRequest } from '@devhub/security';
 import { openTaskStore } from '@devhub/storage';
 import { registerAuthorizationApi } from './authorization-api.js';
+import { gitDelivery } from './git-delivery.js';
 
 interface ServerOptions {
   port: number;
@@ -16,6 +17,7 @@ interface ServerOptions {
   codexWorktreeRoot?: string;
   logger?: ReturnType<typeof createLogger>;
   clock?: () => number;
+  gitDependencies?: Parameters<typeof gitDelivery>[1];
 }
 
 export function createServer(options: ServerOptions): FastifyInstance {
@@ -28,7 +30,25 @@ export function createServer(options: ServerOptions): FastifyInstance {
   });
   const clock = options.clock ?? Date.now;
   const tasks = openTaskStore(options.databasePath, options.managedDataDirectory, clock);
-  app.addHook('onClose', async () => tasks.close());
+  const git = gitDelivery(tasks, options.gitDependencies);
+  let cleanupTimer: ReturnType<typeof setInterval> | undefined;
+  let cleanup: Promise<void> | undefined;
+  function runCleanup() {
+    cleanup ??= git.retryCredentialCleanup().catch(() => {
+      app.log.warn({ code: 'GIT_CREDENTIAL_CLEANUP_UNAVAILABLE' }, 'Credential cleanup failed');
+    }).finally(() => { cleanup = undefined; });
+    return cleanup;
+  }
+  app.addHook('onReady', async () => {
+    await runCleanup();
+    cleanupTimer = setInterval(() => void runCleanup(), 1000);
+    cleanupTimer.unref();
+  });
+  app.addHook('onClose', async () => {
+    clearInterval(cleanupTimer);
+    await cleanup;
+    tasks.close();
+  });
 
   app.addHook('onRequest', async (request, reply) => {
     reply.header('X-Content-Type-Options', 'nosniff');
@@ -71,7 +91,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return reply.code(201).header('Location', `/api/tasks/${task.id}`).send(task);
   });
 
-  registerAuthorizationApi(app, tasks, options.port, clock, options.codexWorktreeRoot);
+  registerAuthorizationApi(app, tasks, options.port, clock, git, options.codexWorktreeRoot);
 
   app.setErrorHandler((error, request, reply) => {
     const status = error instanceof Error && 'statusCode' in error ? error.statusCode : undefined;

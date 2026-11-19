@@ -144,7 +144,7 @@ describe('Git provider boundaries', () => {
           posts++;
           const fields = JSON.parse(body!) as { title: string; description: string };
           mr = { ...fields, state: 'opened' };
-          data = change();
+          throw new GitProviderError('GIT_NETWORK_UNAVAILABLE');
         } else data = mr ? [change()] : [];
       }
       if (suffix === '7') {
@@ -236,6 +236,8 @@ describe('Git delivery', () => {
       store.revise(task.id, task.revision, { title: 'revised fixture', description: '', targetPlatform: 'BOTH' });
       await expect(service.execute(stale.id, { expectedVersion: staleApproval.version, digest: stale.digest }, owner))
         .rejects.toThrow('GIT_WORKTREE_CHANGED');
+      expect(() => store.git.approve(stale.id, { expectedVersion: staleApproval.version, digest: stale.digest }, owner))
+        .toThrow('GIT_CANDIDATE_REVIEW_REQUIRED');
       expect(pushes).toBe(0);
       const { operation } = await service.preview(projectId, input, owner, randomUUID());
       const approve = (version: number) => ({ expectedVersion: version, digest: operation.digest });

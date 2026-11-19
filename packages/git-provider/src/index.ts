@@ -4,7 +4,7 @@ import {
   GitProviderError, gitApiTransport, validateProviderLink, verifyGitWriteAccess,
 } from './endpoint.js';
 import type { Endpoint, GitApiTransport } from './endpoint.js';
-export { GitProviderError, openGitHttps, providerEndpoint, publicGitAddress, smartGitAuthorization } from './endpoint.js';
+export { GitProviderError, gitHttpsFailure, openGitHttps, providerEndpoint, publicGitAddress, smartGitAuthorization } from './endpoint.js';
 export type { Endpoint, GitApiTransport } from './endpoint.js';
 
 export interface RemoteRepository {

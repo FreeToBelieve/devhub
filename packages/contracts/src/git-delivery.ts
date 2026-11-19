@@ -29,6 +29,9 @@ export const gitDeliveryApproval = z.strictObject({
   expectedVersion: z.int().positive(),
   digest: digestSchema,
 });
+export const gitCandidateStaleCodes: readonly string[] = [
+  'GIT_WORKTREE_CHANGED', 'GIT_HEAD_CHANGED', 'GIT_CANDIDATE_TREE_CHANGED', 'WORKSPACE_SECRET_DETECTED',
+];
 
 export interface GitConnection {
   projectId: string;
@@ -83,6 +86,35 @@ export type GitProjectInput = z.infer<typeof gitProjectInput>;
 export type GitDeliveryInput = z.infer<typeof gitDeliveryInput>;
 export type GitDeliveryApproval = z.infer<typeof gitDeliveryApproval>;
 
+export interface GitCandidateBlob {
+  kind: 'text' | 'binary' | 'lfs-pointer' | 'submodule' | 'symlink';
+  mediaType: string;
+  size: number | null;
+  sha256: string | null;
+  objectSha: string;
+  lfs?: { sha256: string; size: number };
+}
+
+export interface GitCandidateFile {
+  path: string;
+  previousPath: string | null;
+  status: 'added' | 'modified' | 'deleted' | 'renamed' | 'type-changed';
+  before: GitCandidateBlob | null;
+  after: GitCandidateBlob | null;
+  patch: string | null;
+  warnings: string[];
+}
+
+export interface GitCandidatePreview {
+  candidateTreeSha: string;
+  baseHeadSha: string;
+  workspaceSha256: string;
+  changedFiles: GitCandidateFile[];
+  candidateDiffDigest: string;
+  candidateFileSummary: Record<GitCandidateFile['status'], number>;
+  canCommit: boolean;
+}
+
 export interface GitDeliveryBinding extends GitDeliveryInput {
   projectId: string;
   connectionVersion: number;
@@ -94,6 +126,8 @@ export interface GitDeliveryBinding extends GitDeliveryInput {
   taskRevision: number;
   taskSpecSha256: string;
   remoteHead: string | null;
+  candidateTreeSha?: string;
+  candidateDiffDigest?: string;
 }
 
 export interface GitOperation {
@@ -101,7 +135,7 @@ export interface GitOperation {
   projectId: string;
   binding: GitDeliveryBinding;
   digest: string;
-  summary: { changes: string[]; diff: string };
+  summary: { changes: string[]; diff: string; candidate?: GitCandidatePreview };
   phase: 'PREVIEW' | 'APPROVED' | 'COMMITTED' | 'PUSHED' | 'DELIVERED';
   version: number;
   commitSha: string | null;

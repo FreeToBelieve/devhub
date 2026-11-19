@@ -1,9 +1,10 @@
 import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type {
-  CodexRun, GitBranch, GitChange, GitCheck, GitConnection, GitDiffFile, GitOperation, GitReview, RunnerRecord, Task, WorktreeRecord,
+  CodexRun, GitBranch, GitCandidateBlob, GitCandidatePreview, GitChange, GitCheck, GitConnection, GitDiffFile, GitOperation,
+  GitReview, RunnerRecord, Task, WorktreeRecord,
 } from '@devhub/contracts';
-import { operatorSessionSchema } from '@devhub/contracts';
+import { gitCandidateStaleCodes, operatorSessionSchema } from '@devhub/contracts';
 import { request } from './api.js';
 
 interface Catalog {
@@ -17,6 +18,7 @@ interface Operations {
   changes: GitChange[];
   operations: GitOperation[];
   audit: { id: number; kind: string; reason: string | null; createdAt: number }[];
+  credentialCleanup: { attempts: number; lastErrorCode: string | null; nextAttemptAt: number }[];
 }
 
 interface Details { change: GitChange; diff: GitDiffFile[]; reviews: GitReview[]; checks: GitCheck[] }
@@ -30,6 +32,53 @@ function Panel({ title, children }: { title: string; children: ReactNode }) {
 }
 
 function formValue(data: FormData, name: string) { return String(data.get(name) ?? ''); }
+
+const changeLabels = { added: '新增', modified: '修改', deleted: '删除', renamed: '重命名', 'type-changed': '类型变化' };
+const previewWarnings: Record<string, string> = {
+  GIT_BINARY_METADATA_ONLY: '二进制内容以元数据展示。',
+  GIT_TEXT_ENCODING_UNSUPPORTED: '内容无法按 UTF-8 解码，显示原始字节摘要。',
+  GIT_TEXT_PREVIEW_LIMIT: '文件超过文本展示上限。已计算完整文件 SHA-256。',
+  GIT_PATCH_TRUNCATED: '差异达到展示上限，剩余文本未显示。',
+  GIT_LFS_POINTER_ONLY: '这里只审查 Git LFS 指针。资源内容由 LFS 独立保存。',
+  GIT_LFS_POINTER_REQUIRED: '该路径由 Git LFS 管理，需先生成合法指针。',
+  GIT_SUBMODULE_POINTER_ONLY: '这里记录的是子模块提交引用。该变更需要单独交付。',
+  GIT_SYMLINK_UNSUPPORTED: '链接目标未展开，该变更需要单独处理。',
+  GIT_HISTORICAL_SECRET_HIDDEN: '历史文件触发秘密检测，差异已隐藏。',
+};
+
+function CandidateBlob({ label, blob }: { label: string; blob: GitCandidateBlob }) {
+  return <div className="git-blob">
+    <strong>{label}</strong> <span>{blob.mediaType}{blob.size !== null && ' · ' + blob.size.toLocaleString() + ' B'}</span>
+    {blob.sha256 && <div>SHA-256 <code>{blob.sha256}</code></div>}
+    {blob.lfs && <div>LFS 资源大小 {blob.lfs.size.toLocaleString()} B · SHA-256 <code>{blob.lfs.sha256}</code></div>}
+    {blob.kind === 'submodule' && <div>Gitlink <code>{blob.objectSha}</code></div>}
+  </div>;
+}
+
+function CandidatePreview({ candidate }: { candidate: GitCandidatePreview }) {
+  return <section className="git-candidate" aria-label="候选提交预览">
+    <dl className="git-candidate-ids">
+      <dt>Candidate Tree</dt><dd><code>{candidate.candidateTreeSha}</code></dd>
+      <dt>Base HEAD</dt><dd><code>{candidate.baseHeadSha}</code></dd>
+      <dt>Worktree SHA-256</dt><dd><code>{candidate.workspaceSha256}</code></dd>
+      <dt>Diff SHA-256</dt><dd><code>{candidate.candidateDiffDigest}</code></dd>
+    </dl>
+    <p>{Object.entries(candidate.candidateFileSummary).filter(([, count]) => count > 0)
+      .map(([status, count]) => changeLabels[status as keyof typeof changeLabels] + ' ' + count).join(' · ')}</p>
+    {!candidate.canCommit && <p className="alert inset">此候选需要处理下列警告后重新预览。</p>}
+    {candidate.changedFiles.map((file) => <details key={file.path} open>
+      <summary><span className={'git-status git-status-' + file.status}>{changeLabels[file.status]}</span>
+        {file.previousPath && <><code>{file.previousPath}</code> → </>}<code>{file.path}</code>
+      </summary>
+      {file.warnings.length > 0 && <ul>{file.warnings.map((warning) => <li key={warning}>{previewWarnings[warning] ?? warning}</li>)}</ul>}
+      {file.patch && <pre className="git-output git-patch">{file.patch.split('\n').map((line, index) =>
+        <span key={index} className={line.startsWith('+') && !line.startsWith('+++') ? 'git-added' :
+          line.startsWith('-') && !line.startsWith('---') ? 'git-removed' : undefined}>{line + '\n'}</span>)}</pre>}
+      {file.before && (file.before.kind !== 'text' || !file.patch) && <CandidateBlob label="原版本" blob={file.before} />}
+      {file.after && (file.after.kind !== 'text' || !file.patch) && <CandidateBlob label="候选版本" blob={file.after} />}
+    </details>)}
+  </section>;
+}
 
 export function GitManagement() {
   const [csrf, setCsrf] = useState('');
@@ -204,14 +253,21 @@ export function GitManagement() {
     </>}
     {connection && <Panel title="交付记录">
       <button className="button" disabled={busy} onClick={() => void action(refreshRecords, '交付记录已刷新。')}>刷新记录</button>
-      {operations?.operations.map((op) => <div key={op.id} className="git-record">
+      {operations?.credentialCleanup.length ? <p role="status">系统凭据待清理 {operations.credentialCleanup.length} 项。
+        {operations.credentialCleanup.some(({ lastErrorCode }) => lastErrorCode) && ' 上次删除失败，Hub 将自动重试。'}</p> : null}
+      {operations?.operations.map((op) => {
+        const needsPreview = !!op.errorCode && gitCandidateStaleCodes.includes(op.errorCode);
+        return <div key={op.id} className="git-record">
         <strong>{op.binding.title}</strong>
         <p>{op.binding.branch} → {op.binding.targetBranch} · {op.phase} · <code>{(op.commitSha ?? op.binding.head).slice(0, 12)}</code></p>
         <p>变更摘要 <code>{op.digest.slice(0, 12)}</code>{op.errorCode && ' · ' + op.errorCode}</p>
+        {needsPreview && <p className="alert inset">此审批已失效。请重新生成变更预览，再批准新的候选 Tree。</p>}
         <details open={op.phase === 'PREVIEW'}><summary>变更文件 ({op.summary.changes.length})</summary>
-          <pre className="git-output">{[...op.summary.changes, '', op.summary.diff].join('\n')}</pre>
+          {op.summary.candidate ? <CandidatePreview candidate={op.summary.candidate} /> :
+            <><p>历史预览。交付需要重新生成候选 Tree。</p>
+              <pre className="git-output">{[...op.summary.changes, '', op.summary.diff].join('\n')}</pre></>}
         </details>
-        {connection.connected && op.phase !== 'DELIVERED' && <div className="actions">
+        {connection.connected && op.phase !== 'DELIVERED' && !needsPreview && op.summary.candidate?.canCommit && <div className="actions">
           <button className="button" disabled={busy} onClick={() => void action(async () => {
             await write('/api/git/operations/' + op.id + '/approve', { expectedVersion: op.version, digest: op.digest });
             await refreshRecords();
@@ -221,7 +277,8 @@ export function GitManagement() {
             finally { await refreshRecords(); }
           }, '提交、推送和 PR/MR 已确认。')}>执行已批准交付</button>}
         </div>}
-      </div>)}
+      </div>;
+      })}
       {operations?.audit.length ? <details><summary>审计记录</summary><ul>{operations.audit.map((event) => <li key={event.id}>
         {new Date(event.createdAt).toLocaleString()} · {event.kind}{event.reason && ' · ' + event.reason}</li>)}</ul></details> : null}
     </Panel>}
