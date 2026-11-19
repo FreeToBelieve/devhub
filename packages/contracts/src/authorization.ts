@@ -8,7 +8,7 @@ export const localProofSchema = z.string().regex(/^[A-Za-z0-9_-]{43}$/);
 export const revisionSchema = z.int().positive();
 export const requestKeySchema = z.string().regex(/^[A-Za-z0-9_-]{8,100}$/);
 export const codexThreadIdSchema = z.string().regex(/^[A-Za-z0-9_-]{1,128}$/);
-export const developerNetworkModeSchema = z.enum(['OFF', 'DEVELOPER_ALLOWLIST']);
+export const developerNetworkModeSchema = z.enum(['OFF', 'DEVELOPER_ALLOWLIST', 'DEVELOPER_CONNECT']);
 export type DeveloperNetworkMode = z.infer<typeof developerNetworkModeSchema>;
 
 const repoPathSchema = z.string().min(1).max(512).refine((value) => value.split('/').every((part) => (

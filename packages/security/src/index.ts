@@ -35,3 +35,5 @@ export function allowsLocalRequest(
   return host === authority && (origin === undefined || allowsLocalOrigin(origin, port));
 }
 export * from './developer-network.js';
+export * from './workspace-secrets.js';
+export * from './connect-proxy.js';

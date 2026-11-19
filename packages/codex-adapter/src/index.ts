@@ -6,13 +6,14 @@ import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Codex } from '@openai/codex-sdk';
 import type { CodexOptions, McpToolCallItem, ThreadEvent, ThreadOptions } from '@openai/codex-sdk';
-import { codexEnvironment, dependencyDiagnostics, developerDomains, providerProxyEndpoint, sha256 } from '@devhub/security';
+import { codexEnvironment, connectPolicy, dependencyDiagnostics, developerDomains, providerProxyEndpoint, sha256, workspaceSecretRules } from '@devhub/security';
+import { dependencyClientPolicy } from './dependency-client.js';
 
 const sdkVersion = '0.170.0';
 const exec = promisify(execFile);
 const windowsProfileCheck = fileURLToPath(new URL('../windows/profile-permissions.ps1', import.meta.url));
 const brokerPath = fileURLToPath(new URL('./dependency-broker.js', import.meta.url));
-export type DeveloperNetworkMode = 'OFF' | 'DEVELOPER_ALLOWLIST';
+export type DeveloperNetworkMode = 'OFF' | 'DEVELOPER_ALLOWLIST' | 'DEVELOPER_CONNECT';
 
 interface AdapterConfiguration {
   sdkVersion: string;
@@ -23,11 +24,13 @@ interface AdapterConfiguration {
   networkMode: DeveloperNetworkMode;
   rawConfigOverrides: string[];
   dependencyDomains: readonly string[];
+  transparentPolicy: null | { proxy: typeof connectPolicy; clients: typeof dependencyClientPolicy };
   usesLocalLogin: boolean;
 }
 
 export function codexConfiguration(worktree: string, platform = process.platform,
   networkMode: DeveloperNetworkMode = 'OFF'): AdapterConfiguration {
+  if (networkMode === 'DEVELOPER_CONNECT' && platform !== 'darwin') throw new Error('PROXY_OS_CONTAINMENT_UNAVAILABLE');
   const thread: ThreadOptions = {
     approvalPolicy: 'never',
     workingDirectory: worktree,
@@ -41,20 +44,25 @@ export function codexConfiguration(worktree: string, platform = process.platform
     shell_environment_policy: { inherit: 'none', ignore_default_excludes: false },
     features: { apps: false, plugins: false, remote_plugin: false, network_proxy: false },
     ...(platform === 'win32' ? { windows: { sandbox: 'elevated' } } : {}),
-    mcp_servers: networkMode === 'DEVELOPER_ALLOWLIST' ? { devhub_dependencies: {
-      enabled: true, command: process.execPath, args: [brokerPath, worktree], required: true, tool_timeout_sec: 60,
-      enabled_tools: ['fetch_dependency'], default_tools_approval_mode: 'approve',
+    mcp_servers: networkMode !== 'OFF' ? { devhub_dependencies: {
+      enabled: true, command: process.execPath, args: [brokerPath, worktree, networkMode], required: true,
+      tool_timeout_sec: networkMode === 'DEVELOPER_CONNECT' ? 140 : 60,
+      enabled_tools: [networkMode === 'DEVELOPER_CONNECT' ? 'run_dependency_client' : 'fetch_dependency'],
+      default_tools_approval_mode: 'approve',
     } } : {},
   };
   // CLI sandbox_mode would select the legacy workspace profile instead of the native named profile.
   const rawConfigOverrides = [
     'permissions.PROJECT_DEVELOPER.extends=":workspace"',
-    'permissions.PROJECT_DEVELOPER.filesystem={ ":root" = "deny", ":minimal" = "read", ":tmpdir" = "deny", ":slash_tmp" = "deny" }',
+    'permissions.PROJECT_DEVELOPER.filesystem={ ":root" = "deny", ":minimal" = "read", ":tmpdir" = "deny", ' +
+      '":slash_tmp" = "deny", glob_scan_max_depth=24, ":workspace_roots" = {' +
+      workspaceSecretRules.map((pattern) => JSON.stringify(pattern) + ' = "deny"').join(', ') + '} }',
     'permissions.PROJECT_DEVELOPER.network.enabled=false',
   ];
   return {
     sdkVersion, thread, config, rawConfigOverrides, executionProfile: 'PROJECT_DEVELOPER', networkMode,
-    dependencyDomains: networkMode === 'DEVELOPER_ALLOWLIST' ? developerDomains : [],
+    dependencyDomains: networkMode !== 'OFF' ? developerDomains : [],
+    transparentPolicy: networkMode === 'DEVELOPER_CONNECT' ? { proxy: connectPolicy, clients: dependencyClientPolicy } : null,
     usesLocalLogin: process.platform === 'darwin' && process.env.DEVHUB_REUSE_LOCAL_CODEX_LOGIN === '1',
     providerProxy: providerProxyEndpoint(process.env.DEVHUB_CODEX_PROVIDER_PROXY),
   };

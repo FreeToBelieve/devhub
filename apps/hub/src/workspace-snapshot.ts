@@ -3,6 +3,7 @@ import { constants } from 'node:fs';
 import type { BigIntStats } from 'node:fs';
 import { lstat, open, readdir } from 'node:fs/promises';
 import { join } from 'node:path';
+import { containsWorkspaceSecret, isSensitiveConfig, isWorkspaceSecretPath } from '@devhub/security';
 import { generatedRoots } from './worktree.js';
 
 const unityCaches = ['Library', 'Temp', 'Obj', 'obj', 'Logs'];
@@ -47,6 +48,7 @@ export async function snapshotWorkspace(root: string, options: { fresh?: boolean
     for (const entry of children) {
       if (!prefix && entry.name === '.git') continue;
       const name = prefix + entry.name;
+      if (isWorkspaceSecretPath(name)) throw new Error('WORKSPACE_SECRET_DETECTED');
       const lower = entry.name.toLowerCase();
       if (lower === '.git' || (!prefix && lower === '.codex') || entry.isSymbolicLink()) {
         throw new Error('WORKSPACE_SNAPSHOT_UNSAFE_ENTRY');
@@ -76,9 +78,18 @@ export async function snapshotWorkspace(root: string, options: { fresh?: boolean
           cachedFiles++;
         } else {
           const contents = createHash('sha256');
+          const inspectConfig = isSensitiveConfig(name);
+          if (inspectConfig && before.size > 256_000n) throw new Error('WORKSPACE_SECRET_SCAN_LIMIT');
+          let scan = '';
           for await (const chunk of file.createReadStream({ autoClose: false })) {
             withinBudget();
             contents.update(chunk);
+            scan += chunk.toString('utf8');
+            if (containsWorkspaceSecret(scan)) throw new Error('WORKSPACE_SECRET_DETECTED');
+            if (!inspectConfig) scan = scan.slice(-256);
+          }
+          if (inspectConfig && containsWorkspaceSecret(scan, true, lower === '.npmrc')) {
+            throw new Error('WORKSPACE_SECRET_DETECTED');
           }
           contentSha = contents.digest('hex');
         }
@@ -95,7 +106,7 @@ export async function snapshotWorkspace(root: string, options: { fresh?: boolean
       throw new Error('WORKSPACE_SNAPSHOT_CHANGED');
     }
   }
-  digest.update('devhub-workspace-snapshot-v2\n');
+  digest.update('devhub-workspace-snapshot-v3\n');
   await visit(root, '', 0);
   withinBudget();
   recent.delete(root);
