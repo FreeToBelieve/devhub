@@ -10,6 +10,8 @@ const configSchema = z.object({
   DEVHUB_PORT: z.coerce.number().int().min(1024).max(65535).default(4317),
   DEVHUB_DB_PATH: z.string().trim().min(1).default('.devhub/devhub.sqlite'),
   DEVHUB_LOG_LEVEL: z.enum(['fatal', 'error', 'warn', 'info', 'debug', 'trace', 'silent']).default('info'),
+  DEVHUB_CODEX_HOME: z.string().trim().min(1).optional(),
+  DEVHUB_CODEX_WORKTREE_ROOT: z.string().trim().min(1).default('.devhub/codex-worktrees'),
 });
 
 export class HubConfigError extends Error {}
@@ -24,5 +26,9 @@ export function readRuntimeConfig() {
   }
   const { DEVHUB_PORT: port, DEVHUB_DB_PATH: filename, DEVHUB_LOG_LEVEL: level } = config.data;
   const databasePath = resolve(workspace, filename);
-  return { port, databasePath, managedDataDirectory: dirname(databasePath) === resolve(workspace, '.devhub'), level };
+  return {
+    port, databasePath, managedDataDirectory: dirname(databasePath) === resolve(workspace, '.devhub'), level,
+    codexHome: config.data.DEVHUB_CODEX_HOME,
+    codexWorktreeRoot: resolve(workspace, config.data.DEVHUB_CODEX_WORKTREE_ROOT),
+  };
 }

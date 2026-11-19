@@ -56,6 +56,7 @@ export async function claimFromLocalRunner(
   runnerId: string,
   claim: RunnerClaimInput,
   device: Pick<RunnerRecord, 'deviceId' | 'platform'> = localDevice(),
+  onClaim?: (request: ExecutionRequest) => void,
 ) {
   const runnerProof = execution.activateRunner(runnerId, device.deviceId, device.platform);
   return requestOverPipe({ kind: 'claim', runnerId, runnerProof, claim }, async (message, connected) => {
@@ -65,6 +66,6 @@ export async function claimFromLocalRunner(
     return execution.mutate({
       ...message.claim, kind: 'claim', proofDigest: sha256(message.runnerProof), runnerId: message.runnerId,
       deviceId: device.deviceId, workspaceMatches: matches,
-    });
+    }, onClaim);
   });
 }

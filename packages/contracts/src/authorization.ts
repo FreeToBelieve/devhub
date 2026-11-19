@@ -19,6 +19,14 @@ const repoPathSchema = z.string().min(1).max(512).refine((value) => value.split(
 export const executionScopeSchema = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('workspace.write'), paths: z.array(repoPathSchema).min(1).max(16) }),
   z.strictObject({ operation: z.literal('process.run'), executable: z.literal('git'), action: z.enum(['status', 'diff-check']) }),
+  z.strictObject({
+    operation: z.literal('codex.turn'),
+    mode: z.enum(['start', 'resume']),
+    previousRunId: z.uuid().nullable(),
+    promptSha256: digestSchema,
+    sdkConfigSha256: digestSchema,
+    workspaceSha256: digestSchema,
+  }),
 ]);
 
 export const executionBindingSchema = z.strictObject({
@@ -28,12 +36,16 @@ export const executionBindingSchema = z.strictObject({
   repoId: digestSchema,
   worktreeId: digestSchema,
   baseHeadSha: gitHeadSchema,
-  codexThreadId: codexThreadIdSchema,
+  codexThreadId: codexThreadIdSchema.nullable(),
   runnerId: z.uuid(),
   platform: runnerPlatformSchema,
   scope: executionScopeSchema,
   policyVersion: z.int().positive(),
-});
+}).refine(({ codexThreadId, scope }) => scope.operation === 'codex.turn'
+  ? scope.mode === 'start'
+    ? codexThreadId === null && scope.previousRunId === null
+    : codexThreadId !== null && scope.previousRunId !== null
+  : codexThreadId !== null, { message: 'Thread identity must match the operation.' });
 
 export const executionStateSchema = z.enum(['PENDING', 'APPROVED', 'DENIED', 'EXPIRED', 'CLAIMED', 'REVOKED']);
 export const executionRequestSchema = z.object({

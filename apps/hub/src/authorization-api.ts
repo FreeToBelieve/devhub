@@ -9,6 +9,7 @@ import { AuthorizationError, taskSpecDigest } from '@devhub/storage';
 import type { TaskStore } from '@devhub/storage';
 import { workspaceMatches } from './authorization-context.js';
 import { inspectWorktree } from './worktree.js';
+import { inspectCodexWorktree } from './codex-worktree.js';
 
 const cookieName = 'devhub_operator';
 const bootstrapSchema = z.strictObject({ bootstrapCredential: localProofSchema });
@@ -102,8 +103,10 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
   });
   route('GET', '/api/authorization/catalog', (request) => {
     session(request);
+    const catalog = execution.catalog();
     return {
-      ...execution.catalog(), policyVersion: executionPolicyVersion,
+      ...catalog, policyVersion: executionPolicyVersion,
+      worktrees: catalog.worktrees.map((tree) => ({ ...tree, codexManaged: tasks.codex.manages(tree.worktreeId) })),
       tasks: tasks.list().map((task) => ({ ...task, taskSpecSha256: taskSpecDigest(task) })),
     };
   });
@@ -111,7 +114,8 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     session(request);
     const worktree = execution.getWorktree(parse(digestSchema, request.params.id));
     if (!worktree) throw new AuthorizationError('NOT_FOUND');
-    const live = await inspectWorktree(worktree.root).catch(() => { throw new AuthorizationError('STALE_CONTEXT'); });
+    const inspect = tasks.codex.manages(worktree.worktreeId) ? inspectCodexWorktree : inspectWorktree;
+    const live = await inspect(worktree.root).catch(() => { throw new AuthorizationError('STALE_CONTEXT'); });
     if (live.repoId !== worktree.repoId || live.worktreeId !== worktree.worktreeId) throw new AuthorizationError('STALE_CONTEXT');
     return live;
   });
@@ -128,6 +132,9 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     const idempotencyKey = key(request);
     const binding = input(request, executionBindingSchema);
     if (binding.scope.operation === 'workspace.write') binding.scope.paths = [...new Set(binding.scope.paths)].sort();
+    if (binding.scope.operation === 'codex.turn' && !tasks.codex.manages(binding.worktreeId)) {
+      throw new AuthorizationError('FORBIDDEN');
+    }
     const matches = await workspaceMatches(execution, binding);
     return reply.code(201).send(execution.createRequest(binding, actor.digest, idempotencyKey, matches));
   });
@@ -149,5 +156,22 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     return execution.mutate({
       kind: 'revoke', requestId, expectedVersion, sessionDigest: actor.digest, idempotencyKey: key(request), workspaceMatches: false,
     });
+  });
+  route('GET', '/api/codex-runs', (request) => {
+    session(request);
+    return { runs: tasks.codex.list() };
+  });
+  route('GET', '/api/codex-runs/:id/events', (request) => {
+    session(request);
+    const id = parse(taskIdSchema, request.params.id);
+    const query = parse(z.object({ after: z.coerce.number().int().nonnegative().default(0) }), request.query);
+    const run = tasks.codex.get(id);
+    if (!run) throw new AuthorizationError('NOT_FOUND');
+    return { run, events: tasks.codex.events(id, query.after) };
+  });
+  route('POST', '/api/codex-runs/:id/cancel', (request, reply) => {
+    session(request, true);
+    if (!tasks.codex.requestCancel(parse(taskIdSchema, request.params.id))) throw new AuthorizationError('STATE_CONFLICT');
+    return reply.code(204).send();
   });
 }

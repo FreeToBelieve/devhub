@@ -13,6 +13,7 @@
     "devhub": "./bin/devhub.mjs"
   },
   "dependencies": {
+    "@devhub/codex-adapter": "workspace:*",
     "@devhub/contracts": "workspace:*",
     "@devhub/security": "workspace:*"
   }

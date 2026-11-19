@@ -3,19 +3,24 @@ import type { SubmitEvent } from 'react';
 import { z } from 'zod';
 import {
   executionBindingSchema, executionDetailSchema, executionRequestSchema, gitHeadSchema,
-  operatorSessionSchema, runnerRecordSchema, taskSchema, worktreeRecordSchema, digestSchema,
+  operatorSessionSchema, runnerRecordSchema, taskSchema, worktreeRecordSchema, digestSchema, codexRunSchema,
 } from '@devhub/contracts';
-import type { ExecutionRequest, ExecutionAuditEvent, ExecutionState } from '@devhub/contracts';
+import type { ExecutionRequest, ExecutionAuditEvent, ExecutionState, CodexRun } from '@devhub/contracts';
 import { request } from './api.js';
 
 const catalogSchema = z.object({
   tasks: z.array(taskSchema.extend({ taskSpecSha256: digestSchema })),
   runners: z.array(runnerRecordSchema),
-  worktrees: z.array(worktreeRecordSchema),
+  worktrees: z.array(worktreeRecordSchema.extend({ codexManaged: z.boolean() })),
   policyVersion: z.int(),
 });
 const listSchema = z.object({ requests: z.array(executionRequestSchema) });
-const liveSchema = worktreeRecordSchema.extend({ baseHeadSha: gitHeadSchema });
+const liveSchema = worktreeRecordSchema.extend({
+  baseHeadSha: gitHeadSchema,
+  workspaceSha256: digestSchema.optional(),
+  sdkConfigSha256: digestSchema.optional(),
+});
+const runListSchema = z.object({ runs: z.array(codexRunSchema) });
 type Session = z.infer<typeof operatorSessionSchema>;
 type Catalog = z.infer<typeof catalogSchema>;
 
@@ -36,6 +41,7 @@ export function Authorization() {
   const [ready, setReady] = useState(false);
   const [catalog, setCatalog] = useState<Catalog>();
   const [items, setItems] = useState<ExecutionRequest[]>([]);
+  const [runs, setRuns] = useState<CodexRun[]>([]);
   const [audit, setAudit] = useState<Record<string, ExecutionAuditEvent[]>>({});
   const [operation, setOperation] = useState('status');
   const [busy, setBusy] = useState(false);
@@ -60,13 +66,15 @@ export function Authorization() {
   }, []);
 
   async function refresh(signal?: AbortSignal) {
-    const [current, result] = await Promise.all([
+    const [current, result, history] = await Promise.all([
       request('/api/authorization/catalog', catalogSchema, { signal }),
       request('/api/execution-requests', listSchema, { signal }),
+      request('/api/codex-runs', runListSchema, { signal }),
     ]);
     if (!signal?.aborted) {
       setCatalog(current);
       setItems(result.requests);
+      setRuns(history.runs);
     }
   }
 
@@ -125,13 +133,27 @@ export function Authorization() {
       if (!task || !runner || !tree || !catalog) throw new Error('INVALID_AUTHORIZATION_INPUT');
       const live = await request('/api/authorization/worktrees/' + tree.worktreeId, liveSchema);
       const chosenOperation = values.get('operation');
-      const scope = chosenOperation === 'workspace.write'
+      const codexMode = chosenOperation === 'codex.start' ? 'start' : chosenOperation === 'codex.resume' ? 'resume' : null;
+      const previous = codexMode === 'resume' ? runs.find((run) => run.devhubRunId === values.get('previousRun')) : undefined;
+      let scope: unknown = chosenOperation === 'workspace.write'
         ? { operation: 'workspace.write', paths: String(values.get('paths') ?? '').split(/\r?\n/).map((part) => part.trim()).filter(Boolean) }
         : { operation: 'process.run', executable: 'git', action: chosenOperation };
+      if (codexMode !== null) {
+        const prompt = new TextEncoder().encode(String(values.get('prompt') ?? ''));
+        if (!prompt.length || prompt.length > 24_000 || !tree.codexManaged ||
+          (codexMode === 'resume' && previous?.worktreeId !== tree.worktreeId)) throw new Error('INVALID_AUTHORIZATION_INPUT');
+        const digest = await crypto.subtle.digest('SHA-256', prompt);
+        scope = {
+          operation: 'codex.turn', mode: codexMode, previousRunId: previous?.devhubRunId ?? null,
+          promptSha256: Array.from(new Uint8Array(digest), (byte) => byte.toString(16).padStart(2, '0')).join(''),
+          sdkConfigSha256: live.sdkConfigSha256, workspaceSha256: live.workspaceSha256,
+        };
+      }
       const binding = executionBindingSchema.safeParse({
         taskId: task.id, taskRevision: task.revision, taskSpecSha256: task.taskSpecSha256,
         runnerId: runner.id, platform: runner.platform, repoId: live.repoId, worktreeId: live.worktreeId,
-        baseHeadSha: live.baseHeadSha, codexThreadId: values.get('thread'), policyVersion: catalog.policyVersion, scope,
+        baseHeadSha: live.baseHeadSha, codexThreadId: codexMode === null ? values.get('thread') : previous?.providerThreadId ?? null,
+        policyVersion: catalog.policyVersion, scope,
       });
       if (!binding.success) throw new Error('INVALID_AUTHORIZATION_INPUT');
       await write('/api/execution-requests', binding.data);
@@ -174,6 +196,7 @@ export function Authorization() {
             keys.current.clear();
             setCatalog(undefined);
             setItems([]);
+            setRuns([]);
             setAudit({});
             setSession(undefined);
           })}>退出</button>
@@ -194,7 +217,7 @@ export function Authorization() {
               <dt>任务 revision / SHA256</dt><dd><code>{item.binding.taskRevision} / {item.binding.taskSpecSha256}</code></dd>
               <dt>工作树 / 仓库</dt><dd><code>{item.binding.worktreeId}<br />{item.binding.repoId}</code></dd>
               <dt>Git HEAD</dt><dd><code>{item.binding.baseHeadSha}</code></dd>
-              <dt>线程 / Runner</dt><dd><code>{item.binding.codexThreadId} / {item.binding.runnerId}</code></dd>
+              <dt>线程 / Runner</dt><dd><code>{item.binding.codexThreadId ?? '新 Thread'} / {item.binding.runnerId}</code></dd>
               <dt>范围 / 策略版本</dt><dd><code>{JSON.stringify(item.binding.scope)} / {item.binding.policyVersion}</code></dd>
               <dt>到期</dt><dd>{new Date(item.grantExpiresAt ?? item.expiresAt).toLocaleString()}</dd>
               <dt>绑定摘要</dt><dd><code>{item.bindingDigest}</code></dd>
@@ -231,14 +254,28 @@ export function Authorization() {
         <select id="authorization-runner" name="runner" required>{catalog?.runners.map((entry) => <option key={entry.id} value={entry.id}>{entry.label} · {entry.platform}</option>)}</select>
         <label htmlFor="authorization-worktree">Git 工作树</label>
         <select id="authorization-worktree" name="worktree" required>{catalog?.worktrees.map((entry) => <option key={entry.worktreeId} value={entry.worktreeId}>{entry.root}</option>)}</select>
-        <label htmlFor="authorization-thread">Codex Thread ID</label>
-        <input id="authorization-thread" name="thread" required maxLength={128} />
         <label htmlFor="authorization-operation">操作范围</label>
         <select id="authorization-operation" name="operation" value={operation} onChange={(event) => setOperation(event.target.value)}>
           <option value="status">Git status</option>
           <option value="diff-check">Git diff 检查</option>
           <option value="workspace.write">限定文件写入</option>
+          <option value="codex.start">Codex 新 Thread · 整个工作树</option>
+          <option value="codex.resume">Codex 恢复 Thread · 整个工作树</option>
         </select>
+        {operation.startsWith('codex.') ? <>
+          {operation === 'codex.resume' && <>
+            <label htmlFor="authorization-previous-run">上一条 Codex Turn</label>
+            <select id="authorization-previous-run" name="previousRun" required>
+              {runs.filter((run) => run.providerThreadId && run.status !== 'RUNNING' && run.status !== 'INTERRUPTED')
+                .map((run) => <option value={run.devhubRunId} key={run.devhubRunId}>{run.providerThreadId}</option>)}
+            </select>
+          </>}
+          <label htmlFor="authorization-prompt">本次提示词，用于生成审批摘要</label>
+          <textarea id="authorization-prompt" name="prompt" required rows={4} maxLength={24000} />
+        </> : <>
+          <label htmlFor="authorization-thread">Codex Thread ID</label>
+          <input id="authorization-thread" name="thread" required maxLength={128} />
+        </>}
         {operation === 'workspace.write' && <>
           <label htmlFor="authorization-paths">工作树相对路径，每行一条</label>
           <textarea id="authorization-paths" name="paths" required rows={3} />
