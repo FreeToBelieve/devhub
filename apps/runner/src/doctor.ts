@@ -2,7 +2,7 @@ import { inspectEnvironment } from './platform.js';
 
 const usage = 'Usage: devhub doctor [--json]';
 
-export function runCli(args: string[]): number {
+export async function runCli(args: string[]): Promise<number> {
   if (args[0] === '--help' || (args[0] === 'doctor' && args[1] === '--help')) {
     console.log(usage);
     return 0;
@@ -12,7 +12,7 @@ export function runCli(args: string[]): number {
     return 2;
   }
 
-  const report = inspectEnvironment();
+  const report = await inspectEnvironment();
   if (args[1] === '--json') {
     console.log(JSON.stringify(report, null, 2));
   } else {

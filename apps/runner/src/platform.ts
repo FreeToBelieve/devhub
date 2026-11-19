@@ -1,6 +1,7 @@
 import { accessSync, constants, readFileSync, readdirSync, statSync } from 'node:fs';
 import { posix, win32 } from 'node:path';
 import type { DoctorCheck, DoctorReport } from '@devhub/contracts';
+import { checkOperatingSystem, readOperatingSystem } from './operating-system.js';
 
 const requiredUnityVersion = '6000.3.28f1';
 const unityVersionPattern = /^\d+\.\d+\.\d+[abfp]\d+$/;
@@ -19,6 +20,7 @@ interface Machine {
   cwd: string;
   env: NodeJS.ProcessEnv;
   files: FileProbes;
+  readOperatingSystem: typeof readOperatingSystem;
 }
 
 const localFiles: FileProbes = {
@@ -121,7 +123,7 @@ function checkUnityProject(machine: Machine): DoctorCheck {
   return { id: 'unityProject', status: 'warning', detail: 'ProjectVersion.txt has no valid Editor version.' };
 }
 
-export function inspectEnvironment(overrides: Partial<Machine> = {}): DoctorReport {
+export async function inspectEnvironment(overrides: Partial<Machine> = {}): Promise<DoctorReport> {
   const machine: Machine = {
     platform: process.platform,
     arch: process.arch,
@@ -130,16 +132,12 @@ export function inspectEnvironment(overrides: Partial<Machine> = {}): DoctorRepo
     cwd: process.cwd(),
     env: process.env,
     files: localFiles,
+    readOperatingSystem,
     ...overrides,
   };
   const { platform, arch, nodeVersion, nodeLts } = machine;
-  const supportedPlatform = platform === 'win32' || platform === 'darwin';
   const checks: DoctorCheck[] = [
-    {
-      id: 'platform',
-      status: supportedPlatform ? 'pass' : 'fail',
-      detail: `${platform}/${arch}. Target platforms are Windows 11 and macOS.`,
-    },
+    await checkOperatingSystem(platform, arch, machine.readOperatingSystem),
     {
       id: 'node',
       status: nodeLts && nodeVersion.startsWith('24.') ? 'pass' : 'fail',

@@ -10,6 +10,7 @@
     }
   },
   "dependencies": {
-    "@devhub/contracts": "workspace:*"
+    "@devhub/contracts": "workspace:*",
+    "@devhub/security": "workspace:*"
   }
 }

@@ -81,6 +81,9 @@ importers:
       '@devhub/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@devhub/security':
+        specifier: workspace:*
+        version: link:../../packages/security
 
   packages/contracts:
     dependencies:
@@ -101,6 +104,9 @@ importers:
       '@devhub/contracts':
         specifier: workspace:*
         version: link:../contracts
+      '@devhub/security':
+        specifier: workspace:*
+        version: link:../security
 
 packages:
 
