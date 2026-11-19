@@ -4,13 +4,13 @@ import { mkdirSync, mkdtempDisposableSync, readFileSync, writeFileSync } from 'n
 import { createServer, request } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { describe, expect, it } from 'vitest';
+import { describe, expect, it, vi } from 'vitest';
 import type { GitChange } from '../packages/contracts/dist/index.js';
 import {
   authorizedReceivePack, gitTransport, localGitIdentity,
 } from '../packages/git-adapter/dist/index.js';
 import {
-  gitProvider, GitProviderError, providerEndpoint, publicGitAddress,
+  gitProvider, GitProviderError, openGitHttps, providerEndpoint, publicGitAddress,
 } from '../packages/git-provider/dist/index.js';
 import type { GitProvider } from '../packages/git-provider/dist/index.js';
 import { openTaskStore } from '../packages/storage/dist/index.js';
@@ -67,6 +67,28 @@ function fakeProvider(branches: Map<string, string>, desired?: { failCreateOnce?
 }
 
 describe('Git provider boundaries', () => {
+  it('uses a pinned IP for local egress CONNECT without putting credentials in its headers', async () => {
+    const proxy = createServer();
+    const observed: { address?: string; credentialsPresent?: boolean } = {};
+    proxy.on('connect', (incoming, socket) => {
+      observed.address = incoming.url;
+      observed.credentialsPresent = JSON.stringify(incoming.headers).includes(secret);
+      socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+    });
+    await new Promise<void>((ready) => proxy.listen(0, '127.0.0.1', ready));
+    const address = proxy.address();
+    if (!address || typeof address === 'string') throw new Error('test listener failed');
+    vi.stubEnv('DEVHUB_GIT_HTTPS_PROXY', 'http://127.0.0.1:' + address.port);
+    try {
+      await expect(openGitHttps(new URL('https://1.1.1.1/test'), 'GET', { Authorization: 'Bearer ' + secret }))
+        .rejects.toThrow('GIT_NETWORK_UNAVAILABLE');
+      expect(observed).toEqual({ address: '1.1.1.1:443', credentialsPresent: false });
+    } finally {
+      vi.unstubAllEnvs();
+      await new Promise<void>((done) => proxy.close(() => done()));
+    }
+  });
+
   it('pins the custom GitLab host and rejects non-HTTPS, embedded credentials, IPs and alternate API origins', () => {
     expect(providerEndpoint('gitlab', 'https://gitlab.example.com:9998/base/team/project.git',
       'https://gitlab.example.com:9998/base/api/v4')).toMatchObject({

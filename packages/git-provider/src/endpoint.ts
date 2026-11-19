@@ -1,9 +1,9 @@
 import { lookup } from 'node:dns/promises';
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
-import { request } from 'node:https';
+import { Agent, request } from 'node:https';
 import { isIP } from 'node:net';
 import type { Readable } from 'node:stream';
-import { isPublicDeveloperAddress } from '@devhub/security';
+import { isPublicDeveloperAddress, providerProxyEndpoint } from '@devhub/security';
 import type { GitConnection } from '@devhub/contracts';
 
 export class GitProviderError extends Error {
@@ -63,6 +63,9 @@ export async function openGitHttps(
   url: URL, method: string, headers: Record<string, string>, body?: string | Readable,
   signal = AbortSignal.timeout(25_000),
 ): Promise<IncomingMessage> {
+  let proxy: string | null;
+  try { proxy = providerProxyEndpoint(process.env.DEVHUB_GIT_HTTPS_PROXY); }
+  catch { throw new GitProviderError('GIT_EGRESS_PROXY_DENIED'); }
   signal.throwIfAborted();
   return new Promise((accept, reject) => {
     const failure = () => new GitProviderError('GIT_NETWORK_UNAVAILABLE');
@@ -71,17 +74,19 @@ export async function openGitHttps(
     void lookup(url.hostname, { family: 4, all: true }).then((answers) => {
       signal.throwIfAborted();
       const address = publicGitAddress(answers.map(({ address }) => address));
+      const agent = new Agent({ keepAlive: false, ...(proxy ? { proxyEnv: { HTTPS_PROXY: proxy } } : {}) });
       const upstream = request({
         hostname: address, servername: url.hostname, port: url.port || 443, method, path: url.pathname + url.search,
         headers: { ...headers, Host: url.host, 'User-Agent': 'ShanHe-DevHub/0.1' },
-        agent: false, signal, rejectUnauthorized: true, maxHeaderSize: 16384,
+        agent, signal, rejectUnauthorized: true, maxHeaderSize: 16384,
       }, (result) => {
+        result.once('close', () => agent.destroy());
         if ((result.statusCode ?? 0) >= 300 && (result.statusCode ?? 0) < 400) {
           result.destroy();
           reject(new GitProviderError('GIT_REDIRECT_DENIED'));
         } else accept(result);
       });
-      upstream.once('error', () => reject(failure()));
+      upstream.once('error', () => { agent.destroy(); reject(failure()); });
       if (typeof body === 'string') upstream.end(body);
       else if (body) {
         body.once('error', () => upstream.destroy());

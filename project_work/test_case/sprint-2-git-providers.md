@@ -12,7 +12,8 @@
 
 ## 本机与远端记录
 
-- macOS 14.5 arm64，Node 24.22.3，冻结安装、typecheck、Vitest（71 通过、2 跳过）和 build 通过。Git Smart HTTP 使用临时 bare 仓库测试 Push 和 Fetch。操作员会话、任务 revision、Remote 变化和 PR 创建结果不明确的恢复均有自动化测试。
+- macOS 14.5 arm64，Node 24.22.3，冻结安装、typecheck、Vitest（72 通过、2 跳过）和 build 通过。Git Smart HTTP 使用临时 bare 仓库测试 Push 和 Fetch。操作员会话、任务 revision、Remote 变化和 PR 创建结果不明确的恢复均有自动化测试。
+- Git HTTPS 出口的合成 CONNECT 代理只接收到已固定的公网 IP 和端口。请求头未包含测试令牌。
 - Keychain 合成数据写入、读取和清理通过。实际 PROJECT_DEVELOPER 原生沙箱调用系统凭据读取命令返回 44，未读到合成凭据。SQLite、审计和接口响应未发现测试令牌。
 - GitHub 私有测试仓库执行了真实 Fetch、开发分支、Commit、Push、PR、差异、CI、Review 和 PR 更新。两次提交使用同一个 PR，Review 幂等重放无重复评论，Actions 通过，测试仓库默认分支 HEAD 未变。[独立 GitHub 测试 PR](https://github.com/FreeToBelieve/devhub-sprint24-github-acceptance-20261119/pull/1)
 - GitLab.com 和自建 GitLab 的 MR 路径由模拟 API 回归。当前未找到有效的 GitLab 会话，本机 DNS 无法解析 `gitlab.pacher.cn`。真实自建 MR 验收等待可访问的独立测试项目。
