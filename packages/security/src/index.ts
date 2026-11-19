@@ -1,6 +1,9 @@
 import { win32 } from 'node:path';
 
 export { csrfForSession, generateLocalProof, sha256, verifyCsrf } from './credentials.js';
+export { codexEnvironment } from './codex-environment.js';
+export { defaultToolNetworkPolicy, permitsDestination } from './network-policy.js';
+export { providerProxyEndpoint } from './provider-proxy.js';
 
 export const LOOPBACK_HOST = '127.0.0.1';
 

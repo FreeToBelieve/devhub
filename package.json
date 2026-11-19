@@ -14,7 +14,9 @@
     "test": "pnpm build:ts && vitest run",
     "start": "node scripts/check-runtime.mjs && node apps/hub/dist/main.js",
     "doctor": "node apps/runner/bin/devhub.mjs doctor",
-    "authorization": "node scripts/check-runtime.mjs && node apps/hub/dist/authorization-cli.js"
+    "authorization": "node scripts/check-runtime.mjs && node apps/hub/dist/authorization-cli.js",
+    "codex-runtime": "node scripts/check-runtime.mjs && node apps/hub/dist/codex-cli.js",
+    "codex-runtime:smoke": "node scripts/check-runtime.mjs && node scripts/smoke-codex-runtime.mjs"
   },
   "devDependencies": {
     "@devhub/hub": "workspace:*",

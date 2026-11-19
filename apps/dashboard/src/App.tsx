@@ -4,6 +4,7 @@ import { listTasks } from './api.js';
 import { Environment } from './Environment.js';
 import { NewTask, TaskList } from './Tasks.js';
 import { Authorization } from './Authorization.js';
+import { CodexRuns } from './CodexRuns.js';
 
 const titles = {
   overview: '项目总览',
@@ -152,7 +153,7 @@ export function App() {
         {page === 'new-task' && <NewTask onCreated={onCreated} />}
         {page === 'settings' && <Environment />}
         {page === 'authorization' && <Authorization />}
-        {page === 'codex' && <p className="panel empty">接入 Codex SDK 后，这里会显示会话和执行事件。</p>}
+        {page === 'codex' && <CodexRuns />}
         {page === 'unity' && <p className="panel empty">接入 Unity 测试后，这里会显示报告和日志。</p>}
         {page === 'gitlab' && <p className="panel empty">接入 GitLab 后，这里会显示合并请求。</p>}
       </div>

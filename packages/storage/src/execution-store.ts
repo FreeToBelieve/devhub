@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
-  executionAuditEventSchema, executionPolicyVersion, executionRequestSchema, runnerRecordSchema, worktreeRecordSchema,
+  executionAuditEventSchema, executionBindingSchema, executionPolicyVersion, executionRequestSchema, runnerRecordSchema, worktreeRecordSchema,
 } from '@devhub/contracts';
 import type {
   ExecutionBinding, ExecutionRequest, ExecutionState, RunnerClaimInput, RunnerRecord, Task, WorktreeRecord,
@@ -130,7 +130,7 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
       .run(actor.id, action, key, digest, id);
   }
 
-  function mutate(change: OperatorMutation | RunnerMutation) {
+  function mutate(change: OperatorMutation | RunnerMutation, onClaim?: (request: ExecutionRequest) => void) {
     const outcome = immediate(database, () => {
       const now = clock();
       let actor: Actor;
@@ -165,6 +165,9 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
       if (request.version !== change.expectedVersion) return new AuthorizationError('VERSION_CONFLICT');
       const requiredState = change.kind === 'approve' || change.kind === 'deny' ? 'PENDING' : 'APPROVED';
       if (request.status !== requiredState) return new AuthorizationError('STATE_CONFLICT');
+      if (change.kind === 'claim' && request.binding.scope.operation === 'codex.turn' && !onClaim) {
+        return new AuthorizationError('FORBIDDEN');
+      }
 
       if (change.kind === 'approve' || change.kind === 'claim') {
         if (change.kind === 'claim' && request.bindingDigest !== change.bindingDigest) return new AuthorizationError('STALE_CONTEXT');
@@ -191,7 +194,9 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
         advance(request, 'CLAIMED', actor, now);
       }
       rememberKey(actor, keyAction, change.idempotencyKey, fingerprint, request.id);
-      return getRequest(request.id)!;
+      const result = getRequest(request.id)!;
+      if (change.kind === 'claim') onClaim?.(result);
+      return result;
     });
     if (outcome instanceof AuthorizationError) throw outcome;
     return outcome;
@@ -269,7 +274,8 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
         if (request.status !== 'EXPIRED') invalidate(request, 'REVOKED', now, 'TASK_REVISION_CHANGED');
       }
     },
-    createRequest(binding: ExecutionBinding, sessionDigest: string, idempotencyKey: string, workspaceMatches: boolean) {
+    createRequest(input: ExecutionBinding, sessionDigest: string, idempotencyKey: string, workspaceMatches: boolean) {
+      const binding = executionBindingSchema.parse(input);
       const digest = sha256(JSON.stringify(binding));
       return immediate(database, () => {
         const now = clock();

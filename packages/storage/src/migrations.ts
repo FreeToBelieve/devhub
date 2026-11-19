@@ -15,9 +15,9 @@ export function immediate<T>(database: DatabaseSync, operation: () => T): T {
 export function migrate(database: DatabaseSync) {
   immediate(database, () => {
     const previous = database.prepare('PRAGMA user_version').get()?.user_version;
-    if (previous === 1) return;
-    if (previous !== 0) throw new Error('Unsupported DevHub database version.');
-    database.exec(`
+    if (previous === 2) return;
+    if (previous !== 0 && previous !== 1) throw new Error('Unsupported DevHub database version.');
+    if (previous === 0) database.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY NOT NULL,
         title TEXT NOT NULL,
@@ -95,6 +95,36 @@ export function migrate(database: DatabaseSync) {
         PRIMARY KEY (actor_id, action, key)
       ) STRICT;
       PRAGMA user_version = 1;
+    `);
+    database.exec(`
+      CREATE TABLE codex_worktrees (
+        worktree_id TEXT PRIMARY KEY NOT NULL REFERENCES authorization_worktrees(worktree_id)
+      ) STRICT;
+      CREATE TABLE codex_runs (
+        id TEXT PRIMARY KEY NOT NULL,
+        request_id TEXT NOT NULL UNIQUE REFERENCES execution_requests(id),
+        worktree_id TEXT NOT NULL REFERENCES codex_worktrees(worktree_id),
+        prompt_sha256 TEXT NOT NULL,
+        config_sha256 TEXT NOT NULL,
+        thread_id TEXT,
+        provider_turn_id TEXT CHECK (provider_turn_id IS NULL),
+        previous_run_id TEXT REFERENCES codex_runs(id),
+        status TEXT NOT NULL CHECK (status IN ('RUNNING', 'COMPLETED', 'FAILED', 'CANCELLED', 'INTERRUPTED')),
+        owner_pid INTEGER NOT NULL,
+        cancel_requested INTEGER NOT NULL DEFAULT 0 CHECK (cancel_requested IN (0, 1)),
+        started_at INTEGER NOT NULL,
+        finished_at INTEGER
+      ) STRICT;
+      CREATE UNIQUE INDEX codex_one_active_run_per_worktree ON codex_runs(worktree_id)
+        WHERE status IN ('RUNNING', 'INTERRUPTED');
+      CREATE TABLE codex_run_events (
+        seq INTEGER PRIMARY KEY,
+        run_id TEXT NOT NULL REFERENCES codex_runs(id),
+        event_json TEXT NOT NULL CHECK (json_valid(event_json)),
+        created_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE INDEX codex_run_event_order ON codex_run_events(run_id, seq);
+      PRAGMA user_version = 2;
     `);
   });
 }

@@ -1,0 +1,13 @@
+{
+  "name": "@devhub/codex-adapter",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "exports": {
+    ".": { "types": "./dist/index.d.ts", "import": "./dist/index.js" }
+  },
+  "dependencies": {
+    "@devhub/security": "workspace:*",
+    "@openai/codex-sdk": "0.170.0"
+  }
+}

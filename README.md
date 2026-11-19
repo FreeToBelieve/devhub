@@ -71,11 +71,35 @@ pnpm authorization bootstrap
 pnpm authorization runner-claim <runner-id> <grant-id> <version> <binding-digest> <idempotency-key>
 ```
 
-凭据和 CSRF 值只用于本机登录和本机 IPC。操作员 Cookie 为 HttpOnly、SameSite=Strict、host-only。会话有效期八小时。申请最长十分钟，批准后的授予最长两分钟且不超过申请到期时间。授权中心当前只登记能力范围和领取状态。
+凭据和 CSRF 值只用于本机登录和本机 IPC。操作员 Cookie 为 HttpOnly、SameSite=Strict、host-only。会话有效期八小时。申请最长十分钟，批准后的授予最长两分钟且不超过申请到期时间。
 
-审批与领取会重查任务 revision、规范摘要、工作树身份、干净状态和 HEAD。当前工作树策略要求普通 Git 索引，支持检查已跟踪和未忽略的变化，并拒绝登记带外部 Git 内容过滤器、子模块或稀疏索引的工作树。工作树只允许受信任的本机用户登记。持续执行前的沙箱和二次校验由后续执行器实现。
+审批与领取会重查任务 revision、规范摘要、工作树身份和 HEAD。原有文件范围操作还要求干净工作树。Codex 操作改用受管工作树快照和 SDK 配置摘要，并重新审批每次 Turn。工作树策略要求普通 Git 索引，拒绝带外部 Git 内容过滤器、子模块或稀疏索引的工作树。工作树只允许受信任的本机用户登记。
 
 接口、状态和迁移细节见 [Sprint 2.2 设计](project_work/requirement_docs/sprint-2-authorization.md)。验收路径见 [Sprint 2.2 测试](project_work/test_case/sprint-2-authorization.md)。
+
+## Codex Developer Runtime
+
+使用独立的私有 Codex 登录目录，通过现有 Codex CLI 的网页登录流程登录。将同一目录设置为 `DEVHUB_CODEX_HOME`。该目录用于认证与 SDK Thread 历史，配置文件与扩展留在日常 Codex profile 中。
+
+如果模型服务需要本机 HTTP 代理，可显式设置 `DEVHUB_CODEX_PROVIDER_PROXY` 为带端口的 `http://127.0.0.1` 地址。代理只用于模型服务传输。工具网络保持关闭，进程环境中的代理变量需要通过该配置明确选择。
+
+```sh
+pnpm build
+pnpm authorization runner-register "本机 Runner"
+pnpm codex-runtime worktree-create "/path/to/clean/test-repo"
+```
+
+在 Dashboard 的「授权中心」选择受管工作树和 Runner，发起并批准「Codex 新 Thread」或「Codex 恢复 Thread」。将审批时使用的同一份 UTF-8 提示词交给终端命令的标准输入。换行也属于摘要输入。Windows PowerShell 可用 `Get-Content -Raw` 配合 UTF-8 输入管道，或直接从 CMD 重定向文件。
+
+```text
+pnpm codex-runtime run <grant-id> <version> <binding-digest> <idempotency-key> < prompt.txt
+```
+
+Dashboard 的「Codex 执行」增量读取脱敏事件，可请求取消。终端中也可按 Ctrl+C。每个新 Turn 都需要一条新批准。工作树发生中断且无法确认进程已退出时，保留工作树锁和审计记录，新的任务可通过 Git Adapter 创建另一工作树。
+
+本阶段对已跟踪、未跟踪和忽略项中的普通文件采集申请前快照。项目需使用普通 linked worktree，避开符号链接、额外硬链接、特殊文件、子模块和仓库内 Codex 配置。默认给整个工作树工作区级写权限，Git 元数据留给 Git Adapter。
+
+配置 `DEVHUB_CODEX_HOME` 后，可显式运行 `pnpm codex-runtime:smoke`。这会使用登录账号在临时仓库发起三次 SDK Turn。
 
 ## 开发验证
 

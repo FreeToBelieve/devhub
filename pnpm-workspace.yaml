@@ -3,3 +3,4 @@ packages:
   - packages/*
 
 engineStrict: true
+fetchTimeout: 180000

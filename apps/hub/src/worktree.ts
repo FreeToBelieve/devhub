@@ -60,7 +60,9 @@ async function verifyTargets(root: string, scope: ExecutionScope | undefined) {
   }
 }
 
-export async function inspectWorktree(path: string, scope?: ExecutionScope): Promise<WorktreeRecord & { baseHeadSha: string }> {
+export async function inspectWorktree(path: string, scope?: ExecutionScope, allowDirty = false): Promise<WorktreeRecord & {
+  baseHeadSha: string; linked: boolean;
+}> {
   const root = await realpath(resolve(path));
   const layout = (await git(root, [
     'rev-parse', '--path-format=absolute', '--show-toplevel', '--absolute-git-dir', '--git-common-dir', '--verify', 'HEAD',
@@ -78,7 +80,7 @@ export async function inspectWorktree(path: string, scope?: ExecutionScope): Pro
   if (index.split('\0').some((entry) => entry && !/^H (?:100644|100755|120000) [a-f0-9]+ 0\t/.test(entry))) {
     throw new Error('Git submodules, sparse or hidden index entries are outside the execution policy.');
   }
-  if (await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=all'])) {
+  if (!allowDirty && await git(root, ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--ignore-submodules=all'])) {
     throw new Error('Commit or otherwise resolve Git worktree changes before requesting authorization.');
   }
   await verifyTargets(root, scope);
@@ -86,9 +88,15 @@ export async function inspectWorktree(path: string, scope?: ExecutionScope): Pro
     throw new Error('Git HEAD changed while checking the worktree.');
   }
 
-  const repoId = sha256(await directoryIdentity(await realpath(commonDirectory)));
+  const common = await realpath(commonDirectory);
+  const individual = await realpath(gitDirectory);
+  const repoId = sha256(await directoryIdentity(common));
   const worktreeId = sha256(JSON.stringify([
-    repoId, await directoryIdentity(root), await directoryIdentity(await realpath(gitDirectory)),
+    repoId, await directoryIdentity(root), await directoryIdentity(individual),
   ]));
-  return { repoId, worktreeId, root, baseHeadSha };
+  return { repoId, worktreeId, root, baseHeadSha, linked: common !== individual };
+}
+
+export async function addDetachedWorktree(repository: string, destination: string, head: string) {
+  await git(repository, ['-c', 'core.hooksPath=' + isolatedConfig, 'worktree', 'add', '--detach', '--', destination, head]);
 }
