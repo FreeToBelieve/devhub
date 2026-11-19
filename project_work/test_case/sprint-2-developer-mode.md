@@ -20,6 +20,7 @@
 - 经操作员授权复用本机 ChatGPT Codex 登录，在两个独立临时私有 profile 中执行。普通试验的创建、取消、恢复分别为 `a07a1e7a-4f88-4a7d-8c3e-730fce6ed3a7`、`3194de49-c27f-4c50-a6a4-41ba1cbf9102` 和 `c683fbd4-97e7-45ca-8f2e-c00a372d6f31`。状态为 `COMPLETED` → `CANCELLED` → `COMPLETED`，事件数分别为 9、2、7。取消未产生延迟文件，恢复继续原 Thread，命令返回 0。
 - Unity 真实账号 Turn `4817d0f1-15ab-4fac-97f7-22ebdf9878f9` 完成了 Scene、Prefab、Shader、.meta、Script、ProjectSettings 和 Packages 七处修改，保留 13 个事件，其中包含退出码 0 的命令，随后 Unity 6.3 成功导入并构建 macOS Player。
 - 实际 MCP 下载 broker 获得 npm tarball 3,730 字节、Unity UPM 元数据 192,139 字节及 GitHub codeload 归档 67,998 字节。落盘长度与 SHA256 一致，额外主机、IP 字面量及非 443 端口被拒绝。当前主机到 `github.com` 直连返回 `UPSTREAM_ERROR`，此路径未验收。私网 IPv4、IPv6 字面量及重定向规则由测试覆盖。
+- 真实 SDK 在 `DEVELOPER_ALLOWLIST` 批准下执行 Turn `d4ead985-6b43-43fb-8ee4-32cfcfcf2d14`，`mcp_tool_call` 持久化为 `completed`，3,730 字节 npm 归档落入工作树。此模式只预授权固定的下载工具。
 - 实际 v2 临时数据库迁移到 v3，保留任务 revision、审批记录和运行记录，旧活动运行进入 `INTERRUPTED`，工作树仍锁定。Vitest 覆盖真实 Worker IPC 与退出、过期心跳和锁定后的领取竞争。
 
 ## 真实账号与平台待验收

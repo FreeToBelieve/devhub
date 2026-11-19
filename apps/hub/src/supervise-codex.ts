@@ -13,7 +13,7 @@ import type { WorkerInput } from './codex-worker.js';
 const executable = fileURLToPath(new URL('./codex-worker.js', import.meta.url));
 const jobScript = fileURLToPath(new URL('../windows/worker-job.ps1', import.meta.url));
 
-type Outcome = { exitConfirmed: boolean; diagnostic: CodexDiagnostic | null };
+type Outcome = { exitConfirmed: boolean; diagnostic: CodexDiagnostic | null; jobStage?: string };
 type Callbacks = { event: (event: CodexEvent) => void; heartbeat: () => void };
 
 function exited(child: ChildProcess) {
@@ -42,6 +42,13 @@ function windowsJob(pid: number, profile: string, env: NodeJS.ProcessEnv) {
         await delay(50);
       }
       return false;
+    },
+    async stage() {
+      const marker = await status();
+      if (/^(?:STARTING|COMPILED|WAITING_JOB|READY|CLEAN|CONTAINMENT_FAILED|(?:OPEN_PARENT|COMPILE_JOB|CREATE_JOB|SET_JOB_LIMITS|OPEN_WORKER|ASSIGN_WORKER)_\d{1,10})$/.test(marker)) {
+        return marker;
+      }
+      return controller.exitCode === null ? 'NO_READY_MARKER' : 'CONTROLLER_EXIT_' + controller.exitCode;
     },
     cleanUp() {
       cleanup ??= (async () => {
@@ -73,7 +80,8 @@ export async function superviseCodex(input: WorkerInput, signal: AbortSignal, ca
   const providerProxy = providerProxyEndpoint(process.env.DEVHUB_CODEX_PROVIDER_PROXY);
   if (providerProxy) env.DEVHUB_CODEX_PROVIDER_PROXY = providerProxy;
   const child = fork(executable, [], { silent: false, stdio: ['ignore', 'ignore', 'ignore', 'ipc'], windowsHide: true,
-    detached: mac, execArgv: [], env });
+    // On Windows the Job helper owns containment. Avoid libuv's implicit second job.
+    detached: mac || process.platform === 'win32', execArgv: [], env });
   const closed = new Promise<{ code: number | null }>((resolve) => {
     child.once('exit', (code) => resolve({ code }));
     child.once('error', () => { if (!child.pid) resolve({ code: null }); });
@@ -133,13 +141,14 @@ export async function superviseCodex(input: WorkerInput, signal: AbortSignal, ca
     const readyOnTime = Promise.race([ready, delay(10_000, false, { ref: false })]);
     const [workerReady, assigned] = await Promise.all([readyOnTime, job?.assign() ?? mac]);
     if (!pid || !workerReady || !assigned || child.exitCode !== null) {
+      const jobStage = await job?.stage();
       if (child.connected) child.disconnect();
       child.kill();
       await Promise.race([closed, delay(5000, null)]);
       const cleaned = await job?.cleanUp();
       // The launch message was never sent, so no SDK command could have started.
       return { exitConfirmed: !job || cleaned === true,
-        diagnostic: workerReady && !assigned && job ? 'WORKER_JOB_UNAVAILABLE' : 'WORKER_READY_TIMEOUT' };
+        diagnostic: workerReady && !assigned && job ? 'WORKER_JOB_UNAVAILABLE' : 'WORKER_READY_TIMEOUT', jobStage };
     }
     callbacks.heartbeat();
     const launch = !signal.aborted;
