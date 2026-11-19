@@ -14,12 +14,12 @@ function identity(stats: BigIntStats) {
   return [stats.dev, stats.ino, stats.mode, stats.nlink, stats.size, stats.mtimeNs, stats.ctimeNs].join(':');
 }
 
-export async function snapshotWorkspace(root: string, options: { fresh?: boolean; budget?: typeof limits } = {}) {
+export async function snapshotWorkspace(root: string, options: { fresh?: boolean; budget?: typeof limits; forbiddenText?: string } = {}) {
   const budget = options.budget ?? limits;
   const started = performance.now();
   const deadline = started + budget.milliseconds;
   const digest = createHash('sha256');
-  const previous = options.fresh ? undefined : recent.get(root);
+  const previous = options.fresh || options.forbiddenText ? undefined : recent.get(root);
   const next = new Map<string, { identity: string; digest: string }>();
   const unity = await lstat(join(root, 'ProjectSettings', 'ProjectVersion.txt')).catch((error: NodeJS.ErrnoException) => {
     if (error.code === 'ENOENT' || error.code === 'ENOTDIR') return undefined;
@@ -48,7 +48,9 @@ export async function snapshotWorkspace(root: string, options: { fresh?: boolean
     for (const entry of children) {
       if (!prefix && entry.name === '.git') continue;
       const name = prefix + entry.name;
-      if (isWorkspaceSecretPath(name)) throw new Error('WORKSPACE_SECRET_DETECTED');
+      if (isWorkspaceSecretPath(name) || (options.forbiddenText && name.includes(options.forbiddenText))) {
+        throw new Error('WORKSPACE_SECRET_DETECTED');
+      }
       const lower = entry.name.toLowerCase();
       if (lower === '.git' || (!prefix && lower === '.codex') || entry.isSymbolicLink()) {
         throw new Error('WORKSPACE_SNAPSHOT_UNSAFE_ENTRY');
@@ -85,8 +87,10 @@ export async function snapshotWorkspace(root: string, options: { fresh?: boolean
             withinBudget();
             contents.update(chunk);
             scan += chunk.toString('utf8');
-            if (containsWorkspaceSecret(scan)) throw new Error('WORKSPACE_SECRET_DETECTED');
-            if (!inspectConfig) scan = scan.slice(-256);
+            if (containsWorkspaceSecret(scan) || (options.forbiddenText && scan.includes(options.forbiddenText))) {
+              throw new Error('WORKSPACE_SECRET_DETECTED');
+            }
+            if (!inspectConfig) scan = scan.slice(-Math.max(256, options.forbiddenText?.length ?? 0));
           }
           if (inspectConfig && containsWorkspaceSecret(scan, true, lower === '.npmrc')) {
             throw new Error('WORKSPACE_SECRET_DETECTED');

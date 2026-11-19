@@ -17,6 +17,7 @@ export function isSensitiveConfig(path: string) {
 }
 
 const privateKeyHeader = /^[ \t]*-----BEGIN (?:[A-Z0-9]+ )*PRIVATE KEY-----[ \t\r]*$/m;
+const gitProviderSecret = /\b(?:github_pat_[A-Za-z0-9_]{20,}|gh[pousr]_[A-Za-z0-9]{30,}|glpat-[A-Za-z0-9_-]{20,})\b/;
 const npmAuth = /(?:^|:)\s*(?:_authToken|_auth|_password|username|password|token|keyfile|certfile)\s*=/i;
 const sensitiveAssignment = /^\s*(?:export\s+)?["']?[\w.-]*(?:token|password|secret|api[_-]?key|private[_-]?key)[\w.-]*["']?\s*[:=]\s*(.*)$/i;
 
@@ -26,7 +27,7 @@ function reference(value: string) {
 }
 
 export function containsWorkspaceSecret(text: string, inspectAssignments = false, strictNpmrc = false) {
-  if (privateKeyHeader.test(text)) return true;
+  if (privateKeyHeader.test(text) || gitProviderSecret.test(text)) return true;
   if (!inspectAssignments) return false;
   return text.split(/\r?\n/).some((line) => {
     if (/^\s*[#;]/.test(line)) return false;

@@ -15,8 +15,8 @@ export function immediate<T>(database: DatabaseSync, operation: () => T): T {
 export function migrate(database: DatabaseSync) {
   immediate(database, () => {
     const previous = database.prepare('PRAGMA user_version').get()?.user_version;
-    if (previous === 3) return;
-    if (previous !== 0 && previous !== 1 && previous !== 2) throw new Error('Unsupported DevHub database version.');
+    if (previous === 4) return;
+    if (previous !== 0 && previous !== 1 && previous !== 2 && previous !== 3) throw new Error('Unsupported DevHub database version.');
     if (previous === 0) database.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY NOT NULL,
@@ -96,7 +96,7 @@ export function migrate(database: DatabaseSync) {
       ) STRICT;
       PRAGMA user_version = 1;
     `);
-    if (previous !== 2) database.exec(`
+    if (previous === 0 || previous === 1) database.exec(`
       CREATE TABLE codex_worktrees (
         worktree_id TEXT PRIMARY KEY NOT NULL REFERENCES authorization_worktrees(worktree_id)
       ) STRICT;
@@ -126,7 +126,7 @@ export function migrate(database: DatabaseSync) {
       CREATE INDEX codex_run_event_order ON codex_run_events(run_id, seq);
       PRAGMA user_version = 2;
     `);
-    database.exec(`
+    if (previous !== 3) database.exec(`
       ALTER TABLE codex_runs ADD COLUMN worker_id TEXT;
       ALTER TABLE codex_runs ADD COLUMN heartbeat_at INTEGER;
       ALTER TABLE codex_runs ADD COLUMN exit_confirmed_at INTEGER;
@@ -134,6 +134,92 @@ export function migrate(database: DatabaseSync) {
       UPDATE codex_runs SET status='INTERRUPTED',diagnostic_code='PROCESS_EXIT_UNCONFIRMED'
         WHERE status='RUNNING';
       PRAGMA user_version = 3;
+    `);
+    database.exec(`
+      CREATE TABLE git_providers (
+        id TEXT PRIMARY KEY NOT NULL,
+        kind TEXT NOT NULL CHECK (kind IN ('github','gitlab')),
+        api_base_url TEXT NOT NULL,
+        UNIQUE (kind,api_base_url)
+      ) STRICT;
+      CREATE TABLE git_credentials_refs (
+        id TEXT PRIMARY KEY NOT NULL,
+        project_id TEXT NOT NULL,
+        created_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE project_provider_connections (
+        project_id TEXT PRIMARY KEY NOT NULL,
+        provider_id TEXT NOT NULL REFERENCES git_providers(id),
+        credential_ref TEXT REFERENCES git_credentials_refs(id),
+        repository_url TEXT NOT NULL,
+        remote_id TEXT NOT NULL,
+        default_branch TEXT NOT NULL,
+        account TEXT NOT NULL,
+        version INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE git_operations (
+        id TEXT PRIMARY KEY NOT NULL,
+        project_id TEXT NOT NULL REFERENCES project_provider_connections(project_id),
+        task_id TEXT NOT NULL REFERENCES tasks(id),
+        worktree_id TEXT NOT NULL REFERENCES codex_worktrees(worktree_id),
+        branch TEXT NOT NULL,
+        binding TEXT NOT NULL CHECK (json_valid(binding)),
+        summary TEXT NOT NULL CHECK (json_valid(summary)),
+        digest TEXT NOT NULL,
+        phase TEXT NOT NULL CHECK (phase IN ('PREVIEW','APPROVED','COMMITTED','PUSHED','DELIVERED')),
+        version INTEGER NOT NULL,
+        operator_digest TEXT,
+        approved_until INTEGER,
+        owner TEXT,
+        commit_sha TEXT,
+        change_number INTEGER,
+        error_code TEXT,
+        created_at INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE UNIQUE INDEX git_operations_active_worktree ON git_operations(worktree_id) WHERE owner IS NOT NULL;
+      CREATE INDEX git_operations_branch ON git_operations(project_id,branch,updated_at);
+      CREATE TABLE pull_requests (
+        project_id TEXT NOT NULL REFERENCES project_provider_connections(project_id),
+        number INTEGER NOT NULL,
+        branch TEXT NOT NULL,
+        state TEXT NOT NULL,
+        data TEXT NOT NULL CHECK (json_valid(data)),
+        PRIMARY KEY (project_id,number)
+      ) STRICT;
+      CREATE TABLE pull_request_reviews (
+        project_id TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        review_id TEXT NOT NULL,
+        data TEXT NOT NULL CHECK (json_valid(data)),
+        PRIMARY KEY (project_id,number,review_id),
+        FOREIGN KEY (project_id,number) REFERENCES pull_requests(project_id,number)
+      ) STRICT;
+      CREATE TABLE git_audit_events (
+        id INTEGER PRIMARY KEY,
+        project_id TEXT NOT NULL REFERENCES project_provider_connections(project_id),
+        operation_id TEXT REFERENCES git_operations(id),
+        actor_digest TEXT NOT NULL,
+        kind TEXT NOT NULL,
+        reason TEXT,
+        created_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE git_change_mutations (
+        project_id TEXT NOT NULL,
+        number INTEGER NOT NULL,
+        mutation_key TEXT NOT NULL,
+        digest TEXT NOT NULL,
+        claimed_at INTEGER,
+        PRIMARY KEY (project_id,number,mutation_key),
+        FOREIGN KEY (project_id,number) REFERENCES pull_requests(project_id,number)
+      ) STRICT;
+      CREATE UNIQUE INDEX git_change_mutation_lock ON git_change_mutations(project_id,number) WHERE claimed_at IS NOT NULL;
+      CREATE TRIGGER git_worktree_excludes_codex_run BEFORE INSERT ON codex_runs
+      WHEN EXISTS (SELECT 1 FROM git_operations WHERE worktree_id=NEW.worktree_id AND owner IS NOT NULL)
+      BEGIN
+        SELECT RAISE(ABORT, 'GIT_WORKTREE_BUSY');
+      END;
+      PRAGMA user_version = 4;
     `);
   });
 }

@@ -57,6 +57,12 @@ importers:
       '@devhub/contracts':
         specifier: workspace:*
         version: link:../../packages/contracts
+      '@devhub/git-adapter':
+        specifier: workspace:*
+        version: link:../../packages/git-adapter
+      '@devhub/git-provider':
+        specifier: workspace:*
+        version: link:../../packages/git-provider
       '@devhub/logger':
         specifier: workspace:*
         version: link:../../packages/logger
@@ -108,6 +114,30 @@ importers:
       zod:
         specifier: ^4.0.0
         version: 4.6.7
+
+  packages/git-adapter:
+    dependencies:
+      '@devhub/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@devhub/git-provider':
+        specifier: workspace:*
+        version: link:../git-provider
+      '@devhub/security':
+        specifier: workspace:*
+        version: link:../security
+      koffi:
+        specifier: 3.3.8
+        version: 3.3.8
+
+  packages/git-provider:
+    dependencies:
+      '@devhub/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@devhub/security':
+        specifier: workspace:*
+        version: link:../security
 
   packages/logger:
     dependencies:

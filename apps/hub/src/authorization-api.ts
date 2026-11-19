@@ -10,6 +10,10 @@ import type { TaskStore } from '@devhub/storage';
 import { workspaceMatches } from './authorization-context.js';
 import { inspectWorktree } from './worktree.js';
 import { inspectCodexWorktree } from './codex-worktree.js';
+import { GitProviderError } from '@devhub/git-provider';
+import { GitStateError } from '@devhub/storage';
+import { registerGitApi } from './git-api.js';
+import { safeGitError } from './git-delivery.js';
 
 const cookieName = 'devhub_operator';
 const bootstrapSchema = z.strictObject({ bootstrapCredential: localProofSchema });
@@ -39,10 +43,26 @@ function errorResponse(reply: FastifyReply, error: unknown) {
       error.code === 'NOT_FOUND' ? 404 : 409;
     return reply.code(status).send({ code: error.code, message: error.code });
   }
+  if (error instanceof GitProviderError || error instanceof GitStateError ||
+      (error instanceof Error && /^WORKSPACE_(?:SECRET|SNAPSHOT)_[A-Z_]+$/.test(error.message))) {
+    const code = safeGitError(error);
+    return reply.code(code === 'GIT_OPERATION_NOT_FOUND' ? 404 : 409).send({ code, message: code });
+  }
   throw error;
 }
 
-export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore, port: number, clock: () => number) {
+export interface AuthorizationRoutes {
+  route(method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, handler: (
+    request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply,
+  ) => unknown | Promise<unknown>): void;
+  session(request: FastifyRequest, requireCsrf?: boolean): { digest: string; expiresAt: number; csrfToken: string };
+  parse: typeof parse;
+  input: typeof input;
+  key(request: FastifyRequest): string;
+}
+
+export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore, port: number, clock: () => number,
+  codexWorktreeRoot?: string) {
   const execution = tasks.execution;
   const route = (method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, handler: (
     request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply,
@@ -182,4 +202,5 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     if (!tasks.codex.requestCancel(parse(taskIdSchema, request.params.id))) throw new AuthorizationError('STATE_CONFLICT');
     return reply.code(204).send();
   });
+  registerGitApi({ route, session, parse, input, key }, tasks, codexWorktreeRoot);
 }

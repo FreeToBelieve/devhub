@@ -199,3 +199,19 @@ details[open] .chevron { transform: rotate(225deg); }
   .task-list summary { gap: 9px; padding-inline: 13px; }
   .topbar .separator { padding-inline: 2px; }
 }
+
+.git-output {
+  max-height: 28rem;
+  overflow: auto;
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+
+.git-record {
+  border-top: 1px solid var(--line);
+  padding-block: .8rem;
+}
+
+.git-record .button {
+  margin-inline-start: .6rem;
+}

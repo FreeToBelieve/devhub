@@ -6,6 +6,8 @@
     { "path": "packages/security" },
     { "path": "packages/storage" },
     { "path": "packages/codex-adapter" },
+    { "path": "packages/git-provider" },
+    { "path": "packages/git-adapter" },
     { "path": "apps/runner" },
     { "path": "apps/hub" }
   ]
