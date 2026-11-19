@@ -13,8 +13,10 @@
 ## 本机与远端记录
 
 - macOS 14.5 arm64，Node 24.22.3，冻结安装、typecheck、Vitest（72 通过、2 跳过）和 build 通过。Git Smart HTTP 使用临时 bare 仓库测试 Push 和 Fetch。操作员会话、任务 revision、Remote 变化和 PR 创建结果不明确的恢复均有自动化测试。
-- Git HTTPS 出口的合成 CONNECT 代理只接收到已固定的公网 IP 和端口。请求头未包含测试令牌。
+- Git HTTPS 出口的合成 CONNECT 代理只接收到已固定的公网 IPv4 或 IPv6 及端口。请求头未包含测试令牌。环回、私网、链路本地、IPv4 映射和特殊 IPv6 地址均被拒绝。
 - Keychain 合成数据写入、读取和清理通过。实际 PROJECT_DEVELOPER 原生沙箱调用系统凭据读取命令返回 44，未读到合成凭据。SQLite、审计和接口响应未发现测试令牌。
 - GitHub 私有测试仓库执行了真实 Fetch、开发分支、Commit、Push、PR、差异、CI、Review 和 PR 更新。两次提交使用同一个 PR，Review 幂等重放无重复评论，Actions 通过，测试仓库默认分支 HEAD 未变。[独立 GitHub 测试 PR](https://github.com/FreeToBelieve/devhub-sprint24-github-acceptance-20261119/pull/1)
-- GitLab.com 和自建 GitLab 的 MR 路径由模拟 API 回归。当前未找到有效的 GitLab 会话，本机 DNS 无法解析 `gitlab.pacher.cn`。真实自建 MR 验收等待可访问的独立测试项目。
+- 在同一私有 GitHub 测试仓库，真实 Codex 创建合成 C# 玩法文件并交付。读取 Review 后通过本机 API 创建新授权，同一 Thread 续跑修正代码，推送到原 PR。两轮 Actions 均通过。[Codex 续跑验收 PR](https://github.com/FreeToBelieve/devhub-sprint24-github-acceptance-20261119/pull/2)
+- GitLab.com 和自建 GitLab 的 MR 路径由模拟 API 回归。指定的自建实例只有公网 AAAA 记录。通过主机名访问 `/api/v4/user` 返回 401，固定 IPv6 的 TLS 探测未通过。用户确认尚未创建独立 GitLab 测试仓库，未对正式项目发起操作。
+- Sprint 2.3C 原生沙箱和 npm、pnpm 冒烟通过。旧公共 GitHub 依赖 Fetch 两次返回 128，独立 GitHub 测试仓库的新交付链路通过。
 - Windows 11 x64 桌面和系统凭据实测仍待设备。Windows Server CI 结果单独列在交付 PR。

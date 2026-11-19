@@ -80,9 +80,11 @@ describe('Git provider boundaries', () => {
     if (!address || typeof address === 'string') throw new Error('test listener failed');
     vi.stubEnv('DEVHUB_GIT_HTTPS_PROXY', 'http://127.0.0.1:' + address.port);
     try {
-      await expect(openGitHttps(new URL('https://1.1.1.1/test'), 'GET', { Authorization: 'Bearer ' + secret }))
-        .rejects.toThrow('GIT_NETWORK_UNAVAILABLE');
-      expect(observed).toEqual({ address: '1.1.1.1:443', credentialsPresent: false });
+      for (const [ip, target] of [['1.1.1.1', '1.1.1.1:9998'], ['2606:4700:4700::1111', '[2606:4700:4700::1111]:9998']] as const) {
+        await expect(openGitHttps(new URL('https://gitlab.example.com:9998/test'), 'GET',
+          { Authorization: 'Bearer ' + secret }, undefined, undefined, async () => [ip])).rejects.toThrow('GIT_NETWORK_UNAVAILABLE');
+        expect(observed).toEqual({ address: target, credentialsPresent: false });
+      }
     } finally {
       vi.unstubAllEnvs();
       await new Promise<void>((done) => proxy.close(() => done()));
@@ -102,6 +104,10 @@ describe('Git provider boundaries', () => {
       'https://gitlab.example.com/api/v4')).toThrow('GIT_ENDPOINT_DENIED');
     expect(() => publicGitAddress(['1.1.1.1', '192.168.1.2'])).toThrow('GIT_ADDRESS_DENIED');
     expect(publicGitAddress(['1.1.1.1', '8.8.8.8'])).toBe('1.1.1.1');
+    expect(publicGitAddress(['2606:4700:4700::1111'])).toBe('2606:4700:4700::1111');
+    for (const address of ['::1', 'fc00::1', 'fe80::1%en0', '::ffff:127.0.0.1', '2001:db8::1', '2002::1', '3fff::1']) {
+      expect(() => publicGitAddress(['1.1.1.1', address])).toThrow('GIT_ADDRESS_DENIED');
+    }
   });
 
   it('uses GitLab encoded paths and validates a reflected credential before returning data', async () => {

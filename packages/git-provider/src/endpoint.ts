@@ -1,7 +1,7 @@
-import { lookup } from 'node:dns/promises';
+import { resolve4, resolve6 } from 'node:dns/promises';
 import type { IncomingHttpHeaders, IncomingMessage } from 'node:http';
 import { Agent, request } from 'node:https';
-import { isIP } from 'node:net';
+import { BlockList, isIP, isIPv6 } from 'node:net';
 import type { Readable } from 'node:stream';
 import { isPublicDeveloperAddress, providerProxyEndpoint } from '@devhub/security';
 import type { GitConnection } from '@devhub/contracts';
@@ -11,6 +11,14 @@ export class GitProviderError extends Error {
 }
 
 export type Endpoint = Pick<GitConnection, 'provider' | 'repositoryUrl' | 'apiBaseUrl'> & { projectPath: string };
+
+const globalIpv6 = new BlockList();
+globalIpv6.addSubnet('2000::', 3, 'ipv6');
+const reservedIpv6 = new BlockList();
+// Exclude special-purpose, translation and documentation ranges in the global unicast space.
+for (const [address, prefix] of [['2001::', 23], ['2001:db8::', 32], ['2002::', 16], ['3fff::', 20]] as const) {
+  reservedIpv6.addSubnet(address, prefix, 'ipv6');
+}
 
 function secureUrl(value: string) {
   const url = URL.parse(value);
@@ -53,15 +61,26 @@ export function providerEndpoint(provider: GitConnection['provider'], repository
 
 export function publicGitAddress(addresses: readonly string[]) {
   const first = addresses[0];
-  if (!first || addresses.some((address) => !isPublicDeveloperAddress(address))) {
+  if (!first || addresses.some((address) => !isPublicDeveloperAddress(address) &&
+      (!isIPv6(address) || address.includes('%') || !globalIpv6.check(address, 'ipv6') || reservedIpv6.check(address, 'ipv6')))) {
     throw new GitProviderError('GIT_ADDRESS_DENIED');
   }
   return first;
 }
 
+async function resolveGitAddresses(hostname: string) {
+  function emptyAnswer(error: NodeJS.ErrnoException) {
+    if (error.code === 'ENODATA' || error.code === 'ENOTFOUND') return [];
+    throw error;
+  }
+  const [ipv4, ipv6] = await Promise.all([resolve4(hostname).catch(emptyAnswer), resolve6(hostname).catch(emptyAnswer)]);
+  return [...ipv4, ...ipv6];
+}
+
 export async function openGitHttps(
   url: URL, method: string, headers: Record<string, string>, body?: string | Readable,
   signal = AbortSignal.timeout(25_000),
+  resolveAddresses = resolveGitAddresses,
 ): Promise<IncomingMessage> {
   let proxy: string | null;
   try { proxy = providerProxyEndpoint(process.env.DEVHUB_GIT_HTTPS_PROXY); }
@@ -71,9 +90,9 @@ export async function openGitHttps(
     const failure = () => new GitProviderError('GIT_NETWORK_UNAVAILABLE');
     const abort = () => reject(failure());
     signal.addEventListener('abort', abort, { once: true });
-    void lookup(url.hostname, { family: 4, all: true }).then((answers) => {
+    void resolveAddresses(url.hostname).then((addresses) => {
       signal.throwIfAborted();
-      const address = publicGitAddress(answers.map(({ address }) => address));
+      const address = publicGitAddress(addresses);
       const agent = new Agent({ keepAlive: false, ...(proxy ? { proxyEnv: { HTTPS_PROXY: proxy } } : {}) });
       const upstream = request({
         hostname: address, servername: url.hostname, port: url.port || 443, method, path: url.pathname + url.search,
