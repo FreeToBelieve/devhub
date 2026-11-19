@@ -17,9 +17,11 @@
 - macOS 14.5、Node.js 24.22.3 LTS、pnpm 11.25.0、Codex CLI 与 SDK 0.170.0。冻结安装、类型检查、Vitest 和构建通过。52 项测试通过，2 项 Windows 专属测试跳过。
 - 采用安装的 Unity `6000.3.28f1`，通过 `scripts/smoke-unity-developer.mjs` 在临时项目生成 Scene、Prefab 和 .meta，从 Git Adapter 创建 linked worktree。原生 Codex Seatbelt 接受跨目录修改。新建 Script、修改 Scene、Prefab、Shader、.meta、Packages 和 ProjectSettings 后，Unity 重新导入并完成 macOS Player 构建。
 - 同次原生探针中的认证目录、私钥样本和其他项目 .env 都是临时合成数据。拒绝打开三类文件及指向样本的工作树符号链接，拒绝越界写入和打开 `.git` 指针写入。Shell 对隔离的回环 HTTP 探针没有产生请求。此证据来自实际原生沙箱和 Unity Editor。
+- 经操作员授权复用本机 ChatGPT Codex 登录，在两个独立临时私有 profile 中执行。普通试验的创建、取消、恢复分别为 `a07a1e7a-4f88-4a7d-8c3e-730fce6ed3a7`、`3194de49-c27f-4c50-a6a4-41ba1cbf9102` 和 `c683fbd4-97e7-45ca-8f2e-c00a372d6f31`。状态为 `COMPLETED` → `CANCELLED` → `COMPLETED`，事件数分别为 9、2、7。取消未产生延迟文件，恢复继续原 Thread，命令返回 0。
+- Unity 真实账号 Turn `4817d0f1-15ab-4fac-97f7-22ebdf9878f9` 完成了 Scene、Prefab、Shader、.meta、Script、ProjectSettings 和 Packages 七处修改，保留 13 个事件，其中包含退出码 0 的命令，随后 Unity 6.3 成功导入并构建 macOS Player。
 - 实际 MCP 下载 broker 获得 npm tarball 3,730 字节、Unity UPM 元数据 192,139 字节及 GitHub codeload 归档 67,998 字节。落盘长度与 SHA256 一致，额外主机、IP 字面量及非 443 端口被拒绝。当前主机到 `github.com` 直连返回 `UPSTREAM_ERROR`，此路径未验收。私网 IPv4、IPv6 字面量及重定向规则由测试覆盖。
 - 实际 v2 临时数据库迁移到 v3，保留任务 revision、审批记录和运行记录，旧活动运行进入 `INTERRUPTED`，工作树仍锁定。Vitest 覆盖真实 Worker IPC 与退出、过期心跳和锁定后的领取竞争。
 
 ## 真实账号与平台待验收
 
-本机原有日常 Codex 目录不满足专用私有 profile 的要求。macOS 带 ChatGPT 账号的新 Profile Turn 尚待专用登录目录。Windows 11 x64 主机需独立验证登录、原生 Sandbox、ACL、Job Object、Unity 导入和 Player 构建。Windows Server CI 只提供服务器版运行时回归证据。
+Windows 11 x64 主机需独立验证登录、原生 Sandbox、ACL、Job Object、Unity 导入和 Player 构建。Windows Server CI 只提供服务器版运行时回归证据。

@@ -1,14 +1,19 @@
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { existsSync, mkdirSync, mkdtempDisposableSync, readFileSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { promisify } from 'node:util';
-import { createCodexWorktree } from '../apps/hub/dist/codex-worktree.js';
+import { createCodexWorktree, inspectCodexWorktree } from '../apps/hub/dist/codex-worktree.js';
 import { codexConfiguration } from '../packages/codex-adapter/dist/index.js';
+import { executeApprovedTurn } from '../apps/hub/dist/codex-runtime.js';
+import { localDevice } from '../apps/hub/dist/authorization-context.js';
+import { openTaskStore, taskSpecDigest } from '../packages/storage/dist/index.js';
+import { sha256 } from '../packages/security/dist/index.js';
 
-// This native sandbox and Editor test uses synthetic files and no credentials.
+// The native sandbox probe always uses synthesis. An optional SDK Turn uses an operator profile.
 const binary = process.env.DEVHUB_CODEX_BIN;
 if (process.platform !== 'darwin' || !binary) throw new Error('Set DEVHUB_CODEX_BIN to the installed macOS SDK CLI.');
 const temporary = mkdtempDisposableSync(join(tmpdir(), 'devhub-unity-'));
@@ -141,6 +146,46 @@ public static class DevHubFixture {
     .dependencies['com.unity.modules.animation'], '1.0.0');
   unlinkSync(join(worktree, 'fixture-link'));
   console.log('PASS native sandbox credentials, symlink, Git, write scope and direct network OFF');
+  if (process.env.DEVHUB_CODEX_HOME) {
+    const tree = await inspectCodexWorktree(worktree);
+    const store = openTaskStore(join(root, 'data', 'unity.sqlite'), true);
+    try {
+      store.execution.registerWorktree(tree);
+      store.codex.manage(tree.worktreeId);
+      const runner = store.execution.registerRunner({ ...localDevice(), label: 'Unity live fixture' });
+      const task = store.create({ title: 'Unity developer fixture', description: 'Disposable project', targetPlatform: 'MACOS' });
+      const session = sha256(store.execution.exchangeBootstrap(sha256(store.execution.createBootstrap().proof)).proof);
+      const files = ['Assets/Scenes/Fixture.unity', 'Assets/Prefabs/Fixture.prefab', 'ProjectSettings/ProjectSettings.asset',
+        'Assets/Shaders/Fixture.shader.meta', 'Assets/Shaders/Fixture.shader', 'Assets/FixtureBehavior.cs'];
+      const prompt = 'This is a temporary Unity test worktree. Use one shell command to add a single valid trailing comment ' +
+        'with the text DEVHUB_LIVE_EDIT to each listed existing file, using YAML # for Unity, prefab, asset and meta and // for shader and C#. ' +
+        'Files: ' + files.join(', ') + '. Then edit Packages/manifest.json to also include the built-in dependency ' +
+        'com.unity.modules.audio version 1.0.0, preserving the other dependencies. ' +
+        'Do not access external files or network and do not modify Git metadata. Stop after the changes.';
+      const pending = store.execution.createRequest({
+        taskId: task.id, taskRevision: task.revision, taskSpecSha256: taskSpecDigest(task),
+        repoId: tree.repoId, worktreeId: tree.worktreeId, baseHeadSha: tree.baseHeadSha, runnerId: runner.id,
+        platform: runner.platform, policyVersion: 1, codexThreadId: null,
+        scope: { operation: 'codex.turn', mode: 'start', previousRunId: null, promptSha256: sha256(prompt),
+          sdkConfigSha256: tree.sdkConfigSha256, workspaceSha256: tree.workspaceSha256,
+          executionProfile: tree.executionProfile, networkMode: tree.networkMode },
+      }, session, randomUUID(), true);
+      const approval = store.execution.mutate({ kind: 'approve', requestId: pending.id, expectedVersion: pending.version,
+        sessionDigest: session, idempotencyKey: randomUUID(), workspaceMatches: true });
+      const result = await executeApprovedTurn(store, { grantId: approval.grantId, expectedVersion: approval.version,
+        bindingDigest: approval.bindingDigest, idempotencyKey: randomUUID() }, prompt, process.env.DEVHUB_CODEX_HOME,
+      AbortSignal.timeout(150_000));
+      assert.equal(result.status, 'COMPLETED', result.diagnosticCode ?? undefined);
+      for (const file of files) assert.match(readFileSync(join(worktree, file), 'utf8'), /DEVHUB_LIVE_EDIT/);
+      assert.equal(JSON.parse(readFileSync(join(worktree, 'Packages', 'manifest.json'), 'utf8'))
+        .dependencies['com.unity.modules.audio'], '1.0.0');
+      assert.equal(readFileSync(join(worktree, '.git'), 'utf8'), gitPointer);
+      const events = store.codex.events(result.devhubRunId, 0).map((entry) => entry.event);
+      assert.ok(events.some((event) => event.kind === 'item.completed' && event.itemType === 'command_execution' && event.exitCode === 0));
+      console.log('PASS live SDK Unity batch modification ' + JSON.stringify({ run: result.devhubRunId, files: files.length + 1,
+        events: events.length, providerTurnId: result.providerTurnId }));
+    } finally { store.close(); }
+  }
   const built = await editor(worktree, 'Build');
   assert.match(built, /DEVHUB_FIXTURE_IMPORTED/);
   assert.match(built, /DEVHUB_FIXTURE_BUILD_COMPLETE/);

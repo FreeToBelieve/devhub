@@ -5,8 +5,8 @@ import { fileURLToPath } from 'node:url';
 import { execFile } from 'node:child_process';
 import { promisify } from 'node:util';
 import { Codex } from '@openai/codex-sdk';
-import type { CodexOptions, ThreadEvent, ThreadOptions } from '@openai/codex-sdk';
-import { codexEnvironment, developerDomains, providerProxyEndpoint, sha256 } from '@devhub/security';
+import type { CodexOptions, McpToolCallItem, ThreadEvent, ThreadOptions } from '@openai/codex-sdk';
+import { codexEnvironment, dependencyDiagnostics, developerDomains, providerProxyEndpoint, sha256 } from '@devhub/security';
 
 const sdkVersion = '0.170.0';
 const exec = promisify(execFile);
@@ -43,6 +43,7 @@ export function codexConfiguration(worktree: string, platform = process.platform
     ...(platform === 'win32' ? { windows: { sandbox: 'elevated' } } : {}),
     mcp_servers: networkMode === 'DEVELOPER_ALLOWLIST' ? { devhub_dependencies: {
       enabled: true, command: process.execPath, args: [brokerPath, worktree], required: true, tool_timeout_sec: 60,
+      enabled_tools: ['fetch_dependency'], default_tools_approval_mode: 'approve',
     } } : {},
   };
   // CLI sandbox_mode would select the legacy workspace profile instead of the native named profile.
@@ -90,12 +91,12 @@ export async function isolatedCodexHome(home: string, worktree: string): Promise
   let auth = await profileEntry(loginPath);
   if (auth?.isSymbolicLink() && process.platform === 'darwin' && process.env.DEVHUB_REUSE_LOCAL_CODEX_LOGIN === '1') {
     const localHome = join(homedir(), '.codex');
-    const localDirectory = await lstat(localHome);
-    if (!localDirectory.isDirectory() || localDirectory.uid !== process.getuid?.() || (localDirectory.mode & 0o022) !== 0) {
+    const localDirectory = await profileEntry(localHome);
+    if (!localDirectory?.isDirectory() || localDirectory.uid !== process.getuid?.() || (localDirectory.mode & 0o022) !== 0) {
       throw new Error('CODEX_AUTH_FILE_NOT_PRIVATE');
     }
     const localAuth = join(await realpath(localHome), 'auth.json');
-    if (await realpath(loginPath) !== localAuth || inside(workspace, localAuth)) {
+    if (await realpath(loginPath).catch(() => '') !== localAuth || inside(workspace, localAuth)) {
       throw new Error('CODEX_AUTH_FILE_NOT_PRIVATE');
     }
     auth = await lstat(localAuth);
@@ -152,6 +153,7 @@ export async function streamCodexTurn(input: {
 export function summarizeCodexEvent(event: ThreadEvent) {
   const summary: {
     kind: ThreadEvent['type']; threadId?: string; itemType?: string; exitCode?: number; changedFiles?: number;
+    toolStatus?: McpToolCallItem['status']; toolDiagnostic?: (typeof dependencyDiagnostics)[number];
   } = { kind: event.type };
   if (event.type === 'thread.started') summary.threadId = event.thread_id;
   if ('item' in event) {
@@ -160,6 +162,13 @@ export function summarizeCodexEvent(event: ThreadEvent) {
       summary.exitCode = event.item.exit_code;
     }
     if (event.item.type === 'file_change') summary.changedFiles = event.item.changes.length;
+    if (event.item.type === 'mcp_tool_call' && event.item.server === 'devhub_dependencies') {
+      const item = event.item;
+      summary.toolStatus = item.status;
+      const code = dependencyDiagnostics.find((code) => item.error?.message.includes(code) ||
+        item.result?.content?.some((content) => content.type === 'text' && content.text === code));
+      if (code) summary.toolDiagnostic = code;
+    }
   }
   return summary;
 }

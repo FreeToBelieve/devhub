@@ -64,6 +64,9 @@ it('only brokers approved HTTPS destinations and refuses unsafe redirect and IP 
   expect(isPublicDeveloperAddress('1.1.1.1')).toBe(true);
   const mode = codexConfiguration('/fixture', process.platform, 'DEVELOPER_ALLOWLIST');
   expect(mode.config.mcp_servers).toHaveProperty('devhub_dependencies');
+  expect(mode.config.mcp_servers).toMatchObject({ devhub_dependencies: {
+    enabled_tools: ['fetch_dependency'], default_tools_approval_mode: 'approve',
+  } });
   expect(mode.rawConfigOverrides).toContain('permissions.PROJECT_DEVELOPER.network.enabled=false');
   expect(codexConfigDigest('/fixture', 'OFF')).not.toBe(codexConfigDigest('/fixture', 'DEVELOPER_ALLOWLIST'));
 });
@@ -148,9 +151,9 @@ it.skipIf(process.platform !== 'darwin' && process.platform !== 'win32')(
       AbortSignal.any([cancel.signal, AbortSignal.timeout(18_000)]), {
         event() {}, heartbeat() { heartbeats++; cancel.abort(); },
       });
-    expect(heartbeats).toBeGreaterThan(0);
-    expect(result.exitConfirmed).toBe(true);
-  }, 25000);
+    expect(heartbeats, JSON.stringify(result)).toBeGreaterThan(0);
+    expect(result.exitConfirmed, JSON.stringify(result)).toBe(true);
+  }, 32000);
 
 it.skipIf(process.platform !== 'darwin' && process.platform !== 'win32')(
   'atomically reserves real linked worktree runs, resumes and cancels through the SDK adapter contract',

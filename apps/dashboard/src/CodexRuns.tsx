@@ -98,6 +98,8 @@ export function CodexRuns() {
           {event.kind}{event.itemType && ' · ' + event.itemType}
           {event.exitCode !== undefined && ' · exit ' + event.exitCode}
           {event.changedFiles !== undefined && ' · ' + event.changedFiles + ' 个文件'}
+          {event.toolStatus && ' · ' + event.toolStatus}
+          {event.toolDiagnostic && ' · ' + event.toolDiagnostic}
         </li>)}
       </ol>
     </div>}

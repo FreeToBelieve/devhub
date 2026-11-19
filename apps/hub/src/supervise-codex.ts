@@ -1,7 +1,8 @@
 import { fork, spawn } from 'node:child_process';
 import type { ChildProcess } from 'node:child_process';
+import { mkdtempSync, writeFileSync } from 'node:fs';
+import { readFile, rm } from 'node:fs/promises';
 import { join } from 'node:path';
-import { createInterface } from 'node:readline';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { codexDiagnosticSchema, codexEventSchema } from '@devhub/contracts';
@@ -21,33 +22,35 @@ function exited(child: ChildProcess) {
   );
 }
 
-function windowsJob(pid: number, env: NodeJS.ProcessEnv) {
+function windowsJob(pid: number, profile: string, env: NodeJS.ProcessEnv) {
   const powershell = join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const process = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', jobScript, String(pid)], {
-    env, windowsHide: true, stdio: ['pipe', 'pipe', 'ignore'],
+  const directory = mkdtempSync(join(profile, 'devhub-job-'));
+  const evidence = join(directory, 'evidence');
+  const controller = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', jobScript,
+    String(pid), String(process.pid), directory], {
+    env, windowsHide: true, stdio: 'ignore',
   });
-  const closed = exited(process);
-  process.on('error', () => undefined);
-  process.stdin.on('error', () => undefined);
-  let ready = false;
-  let clean = false;
-  const lines = createInterface({ input: process.stdout });
+  const closed = exited(controller);
+  controller.on('error', () => undefined);
+  const status = () => readFile(evidence, 'utf8').then((value) => value.trim(), () => '');
   let cleanup: Promise<boolean> | undefined;
-  const assigned = new Promise<boolean>((resolve) => {
-    lines.on('line', (line) => {
-      if (line === 'READY') { ready = true; resolve(true); }
-      if (line === 'CLEAN') clean = true;
-    });
-    void closed.then(() => resolve(false));
-  });
   return {
-    async assign() { return Promise.race([assigned, delay(10_000, false, { ref: false })]); },
+    async assign() {
+      const deadline = performance.now() + 12_000;
+      while (performance.now() < deadline && controller.exitCode === null && controller.signalCode === null) {
+        if (await status() === 'READY') return true;
+        await delay(50);
+      }
+      return false;
+    },
     cleanUp() {
       cleanup ??= (async () => {
-        process.stdin.end('\n');
-        const exit = await Promise.race([closed, delay(7000, null, { ref: false })]);
-        if (!exit) process.kill();
-        return ready && clean && exit?.code === 0;
+        writeFileSync(join(directory, 'stop'), '');
+        const exit = await Promise.race([closed, delay(7000, null)]);
+        if (!exit) controller.kill();
+        const clean = await status() === 'CLEAN';
+        if (exit) await rm(directory, { recursive: true, force: true }).catch(() => undefined);
+        return clean && exit?.code === 0;
       })();
       return cleanup;
     },
@@ -76,8 +79,10 @@ export async function superviseCodex(input: WorkerInput, signal: AbortSignal, ca
     child.once('error', () => { if (!child.pid) resolve({ code: null }); });
   });
   const pid = child.pid;
-  const job = process.platform === 'win32' && pid ? windowsJob(pid, env) : undefined;
+  const job = process.platform === 'win32' && pid ? windowsJob(pid, input.profile, env) : undefined;
   let seenDone = false;
+  let markDone: () => void = () => undefined;
+  const done = new Promise<void>((resolve) => { markDone = resolve; });
   let diagnostic: CodexDiagnostic | null = null;
   let errored = false;
   let activeHostTools = 0;
@@ -115,6 +120,7 @@ export async function superviseCodex(input: WorkerInput, signal: AbortSignal, ca
       if (message?.type === 'done') {
         seenDone = true;
         diagnostic = codexDiagnosticSchema.nullable().parse(message.diagnostic);
+        markDone();
       }
     } catch {
       errored = true;
@@ -132,16 +138,20 @@ export async function superviseCodex(input: WorkerInput, signal: AbortSignal, ca
       await Promise.race([closed, delay(5000, null)]);
       const cleaned = await job?.cleanUp();
       // The launch message was never sent, so no SDK command could have started.
-      return { exitConfirmed: !job || cleaned === true, diagnostic: 'WORKER_FAILED' };
+      return { exitConfirmed: !job || cleaned === true,
+        diagnostic: workerReady && !assigned && job ? 'WORKER_JOB_UNAVAILABLE' : 'WORKER_READY_TIMEOUT' };
     }
     callbacks.heartbeat();
-    if (signal.aborted) cancel();
+    const launch = !signal.aborted;
+    if (!launch) cancel();
     else child.send(input, (error) => { if (error) { errored = true; cancel(); } });
     const exit = await Promise.race([closed, exitOverdue]);
-    const exitConfirmed = job ? await job.cleanUp() && seenDone && !errored && activeHostTools === 0 :
-      seenDone && exit?.code === 0 && !errored && activeHostTools === 0 && groupGone(pid);
+    if (launch && !seenDone) await Promise.race([done, delay(500)]);
+    const agreed = (!launch || seenDone) && !errored && activeHostTools === 0;
+    const exitConfirmed = job ? await job.cleanUp() && agreed :
+      !!exit && agreed && groupGone(pid);
     if (child.connected) child.disconnect();
-    return { exitConfirmed, diagnostic: errored || !seenDone || exit?.code !== 0 ? 'WORKER_FAILED' : diagnostic };
+    return { exitConfirmed, diagnostic: errored || (launch && (!seenDone || exit?.code !== 0)) ? 'WORKER_FAILED' : diagnostic };
   } finally {
     clearTimeout(cancelTimer);
     clearTimeout(boundedExit);

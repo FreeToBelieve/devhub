@@ -1,5 +1,9 @@
-param([int] $WorkerPid)
+param([int] $WorkerPid, [int] $SupervisorPid, [string] $Directory)
 $ErrorActionPreference = 'Stop'
+$supervisor = [System.Diagnostics.Process]::GetProcessById($SupervisorPid)
+$null = $supervisor.Handle
+$evidence = [IO.Path]::Combine($Directory, 'evidence')
+$stop = [IO.Path]::Combine($Directory, 'stop')
 
 Add-Type -TypeDefinition @'
 using System;
@@ -67,12 +71,13 @@ public static class DevHubJob {
 '@
 $job = [DevHubJob]::Own($WorkerPid)
 try {
-    [Console]::WriteLine('READY')
-    [Console]::Out.Flush()
-    $null = [Console]::ReadLine()
+    [IO.File]::WriteAllText($evidence, 'READY')
+    while (-not $supervisor.HasExited -and -not [IO.File]::Exists($stop)) {
+        Start-Sleep -Milliseconds 100
+    }
     if (-not [DevHubJob]::Clean($job)) { exit 1 }
-    [Console]::WriteLine('CLEAN')
-    [Console]::Out.Flush()
+    [IO.File]::WriteAllText($evidence, 'CLEAN')
 } finally {
     [DevHubJob]::Close($job)
+    $supervisor.Dispose()
 }

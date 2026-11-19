@@ -21,9 +21,12 @@ export function isPublicDeveloperAddress(address: string) {
   return isIPv4(address) && !nonPublic.check(address);
 }
 
+export const dependencyDiagnostics = [
+  'DESTINATION_DENIED', 'ADDRESS_DENIED', 'REDIRECT_DENIED', 'UPSTREAM_ERROR', 'DOWNLOAD_LIMIT', 'DEPENDENCY_TRANSFER_FAILED',
+] as const;
+
 export class DeveloperNetworkError extends Error {
-  constructor(readonly code: 'DESTINATION_DENIED' | 'ADDRESS_DENIED' | 'REDIRECT_DENIED' |
-    'UPSTREAM_ERROR' | 'DOWNLOAD_LIMIT') { super(code); }
+  constructor(readonly code: (typeof dependencyDiagnostics)[number]) { super(code); }
 }
 
 export function dependencyDestination(raw: string, base?: URL) {

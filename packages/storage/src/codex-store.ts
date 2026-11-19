@@ -80,7 +80,7 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
       sql(`UPDATE codex_runs SET status=?,finished_at=?,exit_confirmed_at=?,diagnostic_code=?
         WHERE id=? AND worker_id=? AND status IN ('RUNNING', 'INTERRUPTED')`)
         .run(exitConfirmed ? status : 'INTERRUPTED', now, exitConfirmed ? now : null,
-          exitConfirmed ? diagnostic : 'PROCESS_EXIT_UNCONFIRMED', id, workerId);
+          diagnostic ?? (exitConfirmed ? null : 'PROCESS_EXIT_UNCONFIRMED'), id, workerId);
       return get(id)!;
     },
     list() {
