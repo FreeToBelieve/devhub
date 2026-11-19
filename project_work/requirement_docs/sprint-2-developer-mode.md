@@ -18,7 +18,7 @@
 - macOS 运维人员可显式选择 `DEVHUB_REUSE_LOCAL_CODEX_LOGIN=1`，在私有 profile 内引用本机 Codex 登录。该模式仅接受当前用户默认 Codex 目录中属主和权限合格的 `auth.json`，配置及历史单独保留，应用不复制登录内容。此选择纳入配置摘要。
 - `DEVELOPER_ALLOWLIST` 是 SDK 启动的独立 MCP 下载进程。只支持公开依赖的 HTTPS GET，固定 443，拒绝 IP 字面量、查询参数、用户信息与私网解析。只解析 IPv4，连接固定在通过检查的地址，保留目标 TLS SNI 和证书校验。每次重定向重新验证并限制跳数，下载限制为 20 次、总共 128 MiB。结果以唯一名称落到工作树根目录。GitHub 走公开归档，npm 和 Unity UPM 可下载公开包至本地处理。Shell 内 npm、Git 和 Unity UPM 客户端的直连与透明代理仍关闭。模型传输沿用完全独立的 provider 配置。
 - 缓存剔除只覆盖 Git 可证的顶层 `Library`、`Temp`、`Obj`、`obj`、`Logs` 和 `node_modules`。Unity 专用项要求存在 `ProjectVersion.txt`。其余忽略项仍计入摘要。预览可按文件标识与纳秒修改元数据复用前次结果，领取时完整读取源内容。扫描预算为 125,000 项、24 GiB、35 秒和深度 64。若超限或扫描期间变动，授权会被安全拒绝。
-- 进程身份是随机 Worker ID 加匿名 IPC。macOS 监控 Worker 进程与进程组，Windows 在 Worker 接收执行消息前绑定 Job Object。超过 15 秒未收到心跳标记中断。仍在执行命令、断开 IPC、原生容器中存在进程或无法证明终止时，会继续保留工作树锁。macOS 进程组不提供跨会话进程的系统级枚举，强隔离生产部署可把 Runner 和项目挂载放到专用虚拟机，将会话与下载边界独立管理。
+- 进程身份是随机 Worker ID 加匿名 IPC。macOS 监控 Worker 进程与进程组。Windows 由 supervisor 在发送执行消息前通过 Win32 API 建立 Job Object，关闭最后一个句柄时终止 Job。固定版本的预编译 Koffi 只在 Windows 执行路径加载，pnpm 安装禁用其编译脚本。超过 15 秒未收到心跳标记中断。仍在执行命令、断开 IPC、原生容器中存在进程或无法证明终止时，会继续保留工作树锁。macOS 进程组不提供跨会话进程的系统级枚举，强隔离生产部署可把 Runner 和项目挂载放到专用虚拟机，将会话与下载边界独立管理。
 - 动态权限批准可以由 Codex App Server 的 `item/commandExecution/requestApproval` 和相应审批响应实现。迁移时应将 App Server 的审批请求绑定 DevHub Run、工作树快照和会话，拒绝授予没有预授权的范围。当前 SDK Turn 使用 `never`，范围变化使用 DevHub 新授权。
 
 参考 [Codex 命名权限](https://learn.chatgpt.com/docs/permissions)、[Codex App Server](https://learn.chatgpt.com/docs/app-server) 和 [Unity UPM 网络要求](https://docs.unity3d.com/6000.3/Documentation/Manual/upm-network.html)。

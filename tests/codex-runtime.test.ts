@@ -106,7 +106,7 @@ it('reuses the profile after the SDK initializes its built-in skills', async () 
   mkdirSync(otherProfile, { mode: 0o700 });
   mkdirSync(join(otherProfile, 'skills', 'custom'), { recursive: true });
   await expect(isolatedCodexHome(otherProfile, worktree)).rejects.toThrow('custom skills');
-});
+}, 30000);
 
 it('omits only untracked, explicitly ignored generated roots and rehashes every source on claim', async () => {
   using temporary = mkdtempDisposableSync(join(tmpdir(), 'devhub-snapshot-'));

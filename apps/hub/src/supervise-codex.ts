@@ -1,68 +1,16 @@
-import { fork, spawn } from 'node:child_process';
-import type { ChildProcess } from 'node:child_process';
-import { mkdtempSync, writeFileSync } from 'node:fs';
-import { readFile, rm } from 'node:fs/promises';
-import { join } from 'node:path';
+import { fork } from 'node:child_process';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
 import { codexDiagnosticSchema, codexEventSchema } from '@devhub/contracts';
 import type { CodexDiagnostic, CodexEvent } from '@devhub/contracts';
 import { codexEnvironment, providerProxyEndpoint } from '@devhub/security';
 import type { WorkerInput } from './codex-worker.js';
+import { ownWindowsWorker, WindowsJobError } from './windows-job.js';
 
 const executable = fileURLToPath(new URL('./codex-worker.js', import.meta.url));
-const jobScript = fileURLToPath(new URL('../windows/worker-job.ps1', import.meta.url));
 
 type Outcome = { exitConfirmed: boolean; diagnostic: CodexDiagnostic | null; jobStage?: string };
 type Callbacks = { event: (event: CodexEvent) => void; heartbeat: () => void };
-
-function exited(child: ChildProcess) {
-  return new Promise<{ code: number | null; signal: NodeJS.Signals | null }>(
-    (resolve) => child.once('close', (code, signal) => resolve({ code, signal })),
-  );
-}
-
-function windowsJob(pid: number, profile: string, env: NodeJS.ProcessEnv) {
-  const powershell = join(env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
-  const directory = mkdtempSync(join(profile, 'devhub-job-'));
-  const evidence = join(directory, 'evidence');
-  const controller = spawn(powershell, ['-NoLogo', '-NoProfile', '-NonInteractive', '-File', jobScript,
-    String(pid), String(process.pid), directory], {
-    env, windowsHide: true, stdio: 'ignore',
-  });
-  const closed = exited(controller);
-  controller.on('error', () => undefined);
-  const status = () => readFile(evidence, 'utf8').then((value) => value.trim(), () => '');
-  let cleanup: Promise<boolean> | undefined;
-  return {
-    async assign() {
-      const deadline = performance.now() + 12_000;
-      while (performance.now() < deadline && controller.exitCode === null && controller.signalCode === null) {
-        if (await status() === 'READY') return true;
-        await delay(50);
-      }
-      return false;
-    },
-    async stage() {
-      const marker = await status();
-      if (/^(?:STARTING|COMPILED|WAITING_JOB|READY|CLEAN|CONTAINMENT_FAILED|(?:OPEN_PARENT|COMPILE_JOB|CREATE_JOB|SET_JOB_LIMITS|OPEN_WORKER|ASSIGN_WORKER)_\d{1,10})$/.test(marker)) {
-        return marker;
-      }
-      return controller.exitCode === null ? 'NO_READY_MARKER' : 'CONTROLLER_EXIT_' + controller.exitCode;
-    },
-    cleanUp() {
-      cleanup ??= (async () => {
-        writeFileSync(join(directory, 'stop'), '');
-        const exit = await Promise.race([closed, delay(7000, null)]);
-        if (!exit) controller.kill();
-        const clean = await status() === 'CLEAN';
-        if (exit) await rm(directory, { recursive: true, force: true }).catch(() => undefined);
-        return clean && exit?.code === 0;
-      })();
-      return cleanup;
-    },
-  };
-}
 
 function groupGone(pid: number) {
   try {
@@ -87,7 +35,7 @@ export async function superviseCodex(input: WorkerInput, signal: AbortSignal, ca
     child.once('error', () => { if (!child.pid) resolve({ code: null }); });
   });
   const pid = child.pid;
-  const job = process.platform === 'win32' && pid ? windowsJob(pid, input.profile, env) : undefined;
+  let job: Awaited<ReturnType<typeof ownWindowsWorker>> | undefined;
   let seenDone = false;
   let markDone: () => void = () => undefined;
   const done = new Promise<void>((resolve) => { markDone = resolve; });
@@ -138,17 +86,19 @@ export async function superviseCodex(input: WorkerInput, signal: AbortSignal, ca
   child.on('error', () => { errored = true; });
   signal.addEventListener('abort', cancel, { once: true });
   try {
-    const readyOnTime = Promise.race([ready, delay(10_000, false, { ref: false })]);
-    const [workerReady, assigned] = await Promise.all([readyOnTime, job?.assign() ?? mac]);
-    if (!pid || !workerReady || !assigned || child.exitCode !== null) {
-      const jobStage = await job?.stage();
+    const workerReady = await Promise.race([ready, delay(10_000, false, { ref: false })]);
+    let jobStage: string | undefined;
+    if (pid && workerReady && process.platform === 'win32') {
+      try { job = await ownWindowsWorker(pid); }
+      catch (error) { jobStage = error instanceof WindowsJobError ? error.stage : 'NATIVE_JOB_BINDING_FAILED'; }
+    }
+    if (!pid || !workerReady || (!mac && !job) || child.exitCode !== null) {
       if (child.connected) child.disconnect();
       child.kill();
-      await Promise.race([closed, delay(5000, null)]);
+      const exited = await Promise.race([closed, delay(5000, null)]);
       const cleaned = await job?.cleanUp();
-      // The launch message was never sent, so no SDK command could have started.
-      return { exitConfirmed: !job || cleaned === true,
-        diagnostic: workerReady && !assigned && job ? 'WORKER_JOB_UNAVAILABLE' : 'WORKER_READY_TIMEOUT', jobStage };
+      return { exitConfirmed: !!exited && (!job || cleaned === true),
+        diagnostic: jobStage ? 'WORKER_JOB_UNAVAILABLE' : 'WORKER_READY_TIMEOUT', jobStage };
     }
     callbacks.heartbeat();
     const launch = !signal.aborted;
@@ -162,6 +112,7 @@ export async function superviseCodex(input: WorkerInput, signal: AbortSignal, ca
     if (child.connected) child.disconnect();
     return { exitConfirmed, diagnostic: errored || (launch && (!seenDone || exit?.code !== 0)) ? 'WORKER_FAILED' : diagnostic };
   } finally {
+    if (job) await job.cleanUp();
     clearTimeout(cancelTimer);
     clearTimeout(boundedExit);
     signal.removeEventListener('abort', cancel);
