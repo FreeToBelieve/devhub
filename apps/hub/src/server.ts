@@ -10,6 +10,7 @@ import { openTaskStore } from '@devhub/storage';
 interface ServerOptions {
   port: number;
   databasePath: string;
+  managedDataDirectory?: boolean;
   dashboardDirectory?: string;
   logger?: ReturnType<typeof createLogger>;
 }
@@ -22,7 +23,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     requestIdHeader: false,
     bodyLimit: 32 * 1024,
   });
-  const tasks = openTaskStore(options.databasePath);
+  const tasks = openTaskStore(options.databasePath, options.managedDataDirectory);
   app.addHook('onClose', async () => tasks.close());
 
   app.addHook('onRequest', async (request, reply) => {

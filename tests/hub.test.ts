@@ -33,7 +33,7 @@ describe('Hub API', () => {
     expect(doctor.statusCode).toBe(200);
     expect(doctor.json().checks.map((check: { id: string }) => check.id))
       .toEqual(['platform', 'node', 'pnpm', 'git', 'codex', 'unity', 'unityProject']);
-  });
+  }, 12000);
 
   it('accepts same-origin JSON, trims task fields and returns its location', async () => {
     const response = await app.inject({
@@ -101,7 +101,7 @@ describe('Hub API', () => {
 it('persists task fields in a SQLite file and opens it again after Hub shutdown', async () => {
   using directory = mkdtempDisposableSync(join(tmpdir(), 'devhub-'));
   const databasePath = join(directory.path, '本机 数据', 'tasks.sqlite');
-  const first = createServer({ port, databasePath });
+  const first = createServer({ port, databasePath, managedDataDirectory: true });
   const recorded = await (async () => {
     try {
       const response = await first.inject({ method: 'POST', url: '/api/tasks', headers, payload: input });
@@ -112,11 +112,11 @@ it('persists task fields in a SQLite file and opens it again after Hub shutdown'
     }
   })();
 
-  const second = createServer({ port, databasePath });
+  const second = createServer({ port, databasePath, managedDataDirectory: true });
   try {
     const list = await second.inject({ url: '/api/tasks', headers });
     expect(list.json()).toEqual({ tasks: [recorded] });
   } finally {
     await second.close();
   }
-});
+}, 35000);

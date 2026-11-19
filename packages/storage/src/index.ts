@@ -1,16 +1,13 @@
 import { randomUUID } from 'node:crypto';
-import { mkdirSync } from 'node:fs';
-import { dirname } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { taskSchema } from '@devhub/contracts';
 import type { CreateTask, Task } from '@devhub/contracts';
+import { protectDatabaseFiles } from './database-permissions.js';
 
 const taskColumns = 'id, title, description, target_platform AS targetPlatform, status, created_at AS createdAt';
 
-export function openTaskStore(filename: string) {
-  if (filename !== ':memory:') {
-    mkdirSync(dirname(filename), { recursive: true, mode: 0o700 });
-  }
+export function openTaskStore(filename: string, managedDataDirectory = false) {
+  if (filename !== ':memory:') protectDatabaseFiles(filename, managedDataDirectory);
 
   const database = new DatabaseSync(filename, { timeout: 1000 });
   try {

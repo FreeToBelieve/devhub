@@ -6,6 +6,8 @@
 
 在仓库根目录执行。需要 Node.js 24 LTS、pnpm 11.25.0 和 Git。可用 `node -v` 和 `pnpm -v` 核对当前终端的版本。
 
+Doctor 支持 Windows 11 客户端（build 22000 起）和 macOS 13.5 起的 x64、arm64 运行环境。Windows 通过 PowerShell CIM 读取系统版本和产品类型，Windows Server 会报告不符合桌面环境要求。macOS 版本门槛与 [Node.js 24 预编译包要求](https://nodejs.org/en/blog/migrations/v22-to-v24) 一致。
+
 ```sh
 pnpm install --frozen-lockfile
 pnpm build
@@ -37,6 +39,8 @@ pnpm start
 | `DEVHUB_UNITY_HUB_ROOT` | 自定义 Unity Hub Editor 根目录，内含 `6000.3.28f1` 版本子目录 |
 | `DEVHUB_UNITY_PROJECT` | 可选的 Unity 工程根目录，内含 `ProjectSettings/ProjectVersion.txt` |
 
+默认数据目录 `.devhub` 和 SQLite 文件在 macOS 分别使用 `0700`、`0600`，在 Windows 使用仅当前用户 SID 的受保护 DACL。配置外部路径时，Hub 保留父目录权限并检查其是否适合 SQLite 事务文件。macOS 的数据库和直接父目录须由当前用户所有，且父目录只允许所有者写入。Windows 外部父目录的 Allow ACE 只允许当前用户、SYSTEM 和内置 Administrators。目录及数据库应位于受信任的本机文件系统。路径为链接或权限无法安全应用时，Hub 会停止启动。
+
 Hub 仅监听 `127.0.0.1`，请求使用同一地址和端口。应用可由同一台电脑上的进程访问。日志记录结构化运行信息，任务内容与凭据应分开保存。
 
 ## 本机 API
@@ -59,4 +63,6 @@ pnpm test
 pnpm build
 ```
 
-验收路径和平台覆盖见 [Sprint 1 测试记录](project_work/test_case/sprint-1.md)。
+GitHub Actions 使用 Windows Server x64 与 macOS arm64 运行锁定依赖安装、类型检查、Vitest 和构建。Windows Server 作业验证原生 ACL 和构建，Windows 11 桌面仍需单独验收。
+
+加固范围和授权中心接口见 [Sprint 2.1 设计](project_work/requirement_docs/sprint-2-hardening.md)。验收路径和平台覆盖见 [Sprint 2.1 测试记录](project_work/test_case/sprint-2-hardening.md)。

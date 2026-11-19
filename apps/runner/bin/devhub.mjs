@@ -20,6 +20,6 @@ if (!process.versions.node.startsWith('24.') || !process.release.lts) {
       process.exit(1);
     }
     const { runCli } = await import(entry);
-    process.exitCode = runCli(process.argv.slice(2));
+    process.exitCode = await runCli(process.argv.slice(2));
   }
 }

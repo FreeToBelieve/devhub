@@ -1,5 +1,5 @@
 import { existsSync } from 'node:fs';
-import { resolve } from 'node:path';
+import { dirname, resolve } from 'node:path';
 import { loadEnvFile } from 'node:process';
 import { fileURLToPath } from 'node:url';
 import { createLogger } from '@devhub/logger';
@@ -33,9 +33,11 @@ async function start() {
   }
 
   const { DEVHUB_PORT: port, DEVHUB_DB_PATH: databasePath, DEVHUB_LOG_LEVEL: level } = config.data;
+  const databaseFile = resolve(workspace, databasePath);
   const app = createServer({
     port,
-    databasePath: resolve(workspace, databasePath),
+    databasePath: databaseFile,
+    managedDataDirectory: dirname(databaseFile) === resolve(workspace, '.devhub'),
     dashboardDirectory,
     logger: createLogger(level),
   });
@@ -69,6 +71,8 @@ try {
   const code = error instanceof Error && 'code' in error ? error.code : undefined;
   if (code === 'EADDRINUSE') {
     console.error('DevHub could not start because the configured port is in use. Check DEVHUB_PORT.');
+  } else if (code === 'DEVHUB_DB_PERMISSIONS') {
+    console.error('DevHub could not secure its SQLite files. Check ownership and permissions on DEVHUB_DB_PATH and its parent directory.');
   } else {
     console.error('DevHub could not start. Check the local .env and permissions on the database directory.');
   }
