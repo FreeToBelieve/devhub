@@ -1,0 +1,153 @@
+import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
+import { z } from 'zod';
+import {
+  decisionInputSchema, digestSchema, executionBindingSchema, executionPolicyVersion, localProofSchema,
+  requestKeySchema, reviseTaskSchema, taskIdSchema, versionInputSchema,
+} from '@devhub/contracts';
+import { allowsLocalOrigin, csrfForSession, sha256, verifyCsrf } from '@devhub/security';
+import { AuthorizationError, taskSpecDigest } from '@devhub/storage';
+import type { TaskStore } from '@devhub/storage';
+import { workspaceMatches } from './authorization-context.js';
+import { inspectWorktree } from './worktree.js';
+
+const cookieName = 'devhub_operator';
+const bootstrapSchema = z.strictObject({ bootstrapCredential: localProofSchema });
+
+class ApiInputError extends Error {
+  constructor(readonly status: number, readonly code: string) {
+    super(code);
+  }
+}
+
+function parse<T>(schema: z.ZodType<T>, value: unknown): T {
+  const parsed = schema.safeParse(value);
+  if (!parsed.success) throw new ApiInputError(400, 'INVALID_AUTHORIZATION_INPUT');
+  return parsed.data;
+}
+
+function input<T>(request: FastifyRequest, schema: z.ZodType<T>): T {
+  const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
+  if (contentType !== 'application/json') throw new ApiInputError(415, 'JSON_REQUIRED');
+  return parse(schema, request.body);
+}
+
+function errorResponse(reply: FastifyReply, error: unknown) {
+  if (error instanceof ApiInputError) return reply.code(error.status).send({ code: error.code, message: error.code });
+  if (error instanceof AuthorizationError) {
+    const status = error.code === 'UNAUTHENTICATED' ? 401 : error.code === 'FORBIDDEN' ? 403 :
+      error.code === 'NOT_FOUND' ? 404 : 409;
+    return reply.code(status).send({ code: error.code, message: error.code });
+  }
+  throw error;
+}
+
+export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore, port: number, clock: () => number) {
+  const execution = tasks.execution;
+  const route = (method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, handler: (
+    request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply,
+  ) => unknown | Promise<unknown>) => {
+    app.route<{ Params: { id: string } }>({ method, url, async handler(request, reply) {
+      try {
+        if (method !== 'GET' && !allowsLocalOrigin(request.headers.origin, port)) {
+          throw new ApiInputError(403, 'EXACT_ORIGIN_REQUIRED');
+        }
+        return await handler(request, reply);
+      } catch (error) {
+        return errorResponse(reply, error);
+      }
+    } });
+  };
+
+  function session(request: FastifyRequest, requireCsrf = false) {
+    const cookies = request.headers.cookie?.split(';').map((cookie) => cookie.trim())
+      .filter((cookie) => cookie.startsWith(cookieName + '=')) ?? [];
+    const proof = cookies.length === 1 ? cookies[0]?.slice(cookieName.length + 1) : undefined;
+    const parsed = localProofSchema.safeParse(proof);
+    if (!parsed.success) throw new AuthorizationError('UNAUTHENTICATED');
+    const digest = sha256(parsed.data);
+    const expiresAt = execution.sessionExpiry(digest);
+    const csrf = request.headers['x-csrf-token'];
+    if (requireCsrf && !verifyCsrf(parsed.data, typeof csrf === 'string' ? csrf : undefined)) {
+      throw new ApiInputError(403, 'CSRF_REQUIRED');
+    }
+    return { digest, expiresAt, csrfToken: csrfForSession(parsed.data) };
+  }
+
+  const key = (request: FastifyRequest) => parse(requestKeySchema, request.headers['idempotency-key']);
+  const setCookie = (reply: FastifyReply, proof: string, maxAge: number) =>
+    reply.header('Set-Cookie', `${cookieName}=${proof}; Path=/api; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`);
+
+  route('POST', '/api/operator/session', (request, reply) => {
+    const { bootstrapCredential } = input(request, bootstrapSchema);
+    const { proof, expiresAt } = execution.exchangeBootstrap(sha256(bootstrapCredential));
+    setCookie(reply, proof, Math.max(0, Math.ceil((expiresAt - clock()) / 1000)));
+    return { csrfToken: csrfForSession(proof), expiresAt };
+  });
+  route('GET', '/api/operator/session', (request) => {
+    const { csrfToken, expiresAt } = session(request);
+    return { csrfToken, expiresAt };
+  });
+  route('DELETE', '/api/operator/session', (request, reply) => {
+    execution.closeSession(session(request, true).digest);
+    return setCookie(reply, '', 0).code(204).send();
+  });
+
+  route('PUT', '/api/tasks/:id/spec', (request) => {
+    session(request, true);
+    const id = parse(taskIdSchema, request.params.id);
+    const { expectedRevision, ...spec } = input(request, reviseTaskSchema);
+    const task = tasks.revise(id, expectedRevision, spec);
+    if (!task) throw new AuthorizationError(tasks.get(id) ? 'VERSION_CONFLICT' : 'NOT_FOUND');
+    return task;
+  });
+  route('GET', '/api/authorization/catalog', (request) => {
+    session(request);
+    return {
+      ...execution.catalog(), policyVersion: executionPolicyVersion,
+      tasks: tasks.list().map((task) => ({ ...task, taskSpecSha256: taskSpecDigest(task) })),
+    };
+  });
+  route('GET', '/api/authorization/worktrees/:id', async (request) => {
+    session(request);
+    const worktree = execution.getWorktree(parse(digestSchema, request.params.id));
+    if (!worktree) throw new AuthorizationError('NOT_FOUND');
+    const live = await inspectWorktree(worktree.root).catch(() => { throw new AuthorizationError('STALE_CONTEXT'); });
+    if (live.repoId !== worktree.repoId || live.worktreeId !== worktree.worktreeId) throw new AuthorizationError('STALE_CONTEXT');
+    return live;
+  });
+  route('GET', '/api/execution-requests', (request) => {
+    session(request);
+    return { requests: execution.requests() };
+  });
+  route('GET', '/api/execution-requests/:id', (request) => {
+    session(request);
+    return execution.detail(parse(taskIdSchema, request.params.id));
+  });
+  route('POST', '/api/execution-requests', async (request, reply) => {
+    const actor = session(request, true);
+    const idempotencyKey = key(request);
+    const binding = input(request, executionBindingSchema);
+    if (binding.scope.operation === 'workspace.write') binding.scope.paths = [...new Set(binding.scope.paths)].sort();
+    const matches = await workspaceMatches(execution, binding);
+    return reply.code(201).send(execution.createRequest(binding, actor.digest, idempotencyKey, matches));
+  });
+  route('POST', '/api/execution-requests/:id/decision', async (request) => {
+    const actor = session(request, true);
+    const requestId = parse(taskIdSchema, request.params.id);
+    const idempotencyKey = key(request);
+    const { decision, expectedVersion } = input(request, decisionInputSchema);
+    const pending = execution.getRequest(requestId);
+    const matches = decision === 'approve' && pending ? await workspaceMatches(execution, pending.binding) : false;
+    return execution.mutate({
+      kind: decision, requestId, expectedVersion, sessionDigest: actor.digest, idempotencyKey, workspaceMatches: matches,
+    });
+  });
+  route('POST', '/api/execution-requests/:id/revoke', (request) => {
+    const actor = session(request, true);
+    const requestId = parse(taskIdSchema, request.params.id);
+    const { expectedVersion } = input(request, versionInputSchema);
+    return execution.mutate({
+      kind: 'revoke', requestId, expectedVersion, sessionDigest: actor.digest, idempotencyKey: key(request), workspaceMatches: false,
+    });
+  });
+}

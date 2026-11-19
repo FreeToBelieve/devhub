@@ -55,6 +55,28 @@ Hub 仅监听 `127.0.0.1`，请求使用同一地址和端口。应用可由同�
 
 创建任务使用 JSON，字段为 `title`、`description` 和 `targetPlatform`。目标平台可选 `WINDOWS`、`MACOS` 或 `BOTH`，说明可传空字符串。新任务的状态为 `CREATED`。
 
+## 本地执行授权
+
+先完成构建。从本机交互式终端登记 Runner 和一个受信任、已提交且干净的 Git 工作树，再签发有效期五分钟的一次性启动凭据。Hub 和授权命令使用同一份 `.env` 与 SQLite 文件。
+
+```sh
+pnpm authorization runner-register "本机 Runner"
+pnpm authorization worktree-register "/path/to/clean/worktree"
+pnpm authorization bootstrap
+```
+
+从 Dashboard 的「授权中心」输入启动凭据。登录后选择任务、Runner 和工作树，填写 Thread ID 与白名单范围，提交并审查申请。批准的记录会显示授予 ID、请求版本和绑定摘要。以下命令通过父子进程间的本机 IPC 领取授权并返回审计回执。
+
+```text
+pnpm authorization runner-claim <runner-id> <grant-id> <version> <binding-digest> <idempotency-key>
+```
+
+凭据和 CSRF 值只用于本机登录和本机 IPC。操作员 Cookie 为 HttpOnly、SameSite=Strict、host-only。会话有效期八小时。申请最长十分钟，批准后的授予最长两分钟且不超过申请到期时间。授权中心当前只登记能力范围和领取状态。
+
+审批与领取会重查任务 revision、规范摘要、工作树身份、干净状态和 HEAD。当前工作树策略要求普通 Git 索引，支持检查已跟踪和未忽略的变化，并拒绝登记带外部 Git 内容过滤器、子模块或稀疏索引的工作树。工作树只允许受信任的本机用户登记。持续执行前的沙箱和二次校验由后续执行器实现。
+
+接口、状态和迁移细节见 [Sprint 2.2 设计](project_work/requirement_docs/sprint-2-authorization.md)。验收路径见 [Sprint 2.2 测试](project_work/test_case/sprint-2-authorization.md)。
+
 ## 开发验证
 
 ```sh

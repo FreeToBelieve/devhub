@@ -1,6 +1,16 @@
 import { win32 } from 'node:path';
 
+export { csrfForSession, generateLocalProof, sha256, verifyCsrf } from './credentials.js';
+
 export const LOOPBACK_HOST = '127.0.0.1';
+
+export function localOrigin(port: number): string {
+  return `http://${LOOPBACK_HOST}:${port}`;
+}
+
+export function allowsLocalOrigin(origin: string | undefined, port: number): boolean {
+  return origin === localOrigin(port);
+}
 
 export function windowsPowerShellPath(): string {
   return win32.join(process.env.SystemRoot ?? 'C:\\Windows', 'System32', 'WindowsPowerShell', 'v1.0', 'powershell.exe');
@@ -19,5 +29,5 @@ export function allowsLocalRequest(
   port: number,
 ): boolean {
   const authority = `${LOOPBACK_HOST}:${port}`;
-  return host === authority && (origin === undefined || origin === `http://${authority}`);
+  return host === authority && (origin === undefined || allowsLocalOrigin(origin, port));
 }

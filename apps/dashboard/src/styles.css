@@ -158,6 +158,11 @@ details[open] .chevron { transform: rotate(225deg); }
 .check-list p { color: var(--muted); font-size: 13px; margin-top: 4px; overflow-wrap: anywhere; }
 
 .task-form { max-width: 740px; padding: clamp(16px, 3vw, 26px); }
+.authorization { display: grid; gap: 16px; }
+.authorization .task-form h2, .task-form > p { margin-bottom: 14px; }
+.authorization-details { display: grid; grid-template-columns: minmax(95px, auto) minmax(0, 1fr); gap: 7px 12px; }
+.authorization-details dt { color: var(--muted); }
+.authorization-details dd { margin: 0; overflow-wrap: anywhere; }
 .task-form fieldset { border: 0; min-width: 0; margin: 0; padding: 0; }
 .task-form label { display: block; margin: 0 0 6px; font-size: 14px; font-weight: 600; }
 .task-form input, .task-form select, .task-form textarea {

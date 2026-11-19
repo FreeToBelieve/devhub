@@ -3,6 +3,7 @@ import type { Task } from '@devhub/contracts';
 import { listTasks } from './api.js';
 import { Environment } from './Environment.js';
 import { NewTask, TaskList } from './Tasks.js';
+import { Authorization } from './Authorization.js';
 
 const titles = {
   overview: '项目总览',
@@ -12,10 +13,11 @@ const titles = {
   unity: 'Unity 测试',
   gitlab: 'GitLab MR',
   settings: '系统设置',
+  authorization: '授权中心',
 };
 type Page = keyof typeof titles;
 const navGroups: { label: string; pages: Page[] }[] = [
-  { label: '工作区', pages: ['overview', 'tasks'] },
+  { label: '工作区', pages: ['overview', 'tasks', 'authorization'] },
   { label: '执行记录', pages: ['codex', 'unity', 'gitlab'] },
   { label: '本机', pages: ['settings'] },
 ];
@@ -149,6 +151,7 @@ export function App() {
         </>}
         {page === 'new-task' && <NewTask onCreated={onCreated} />}
         {page === 'settings' && <Environment />}
+        {page === 'authorization' && <Authorization />}
         {page === 'codex' && <p className="panel empty">接入 Codex SDK 后，这里会显示会话和执行事件。</p>}
         {page === 'unity' && <p className="panel empty">接入 Unity 测试后，这里会显示报告和日志。</p>}
         {page === 'gitlab' && <p className="panel empty">接入 GitLab 后，这里会显示合并请求。</p>}

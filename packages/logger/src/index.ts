@@ -5,6 +5,7 @@ const sensitiveKeys = new Set([
   'authorization', 'proxyauthorization', 'cookie', 'setcookie', 'rawheaders', 'rawtrailers',
   'token', 'gitlabtoken', 'privatetoken', 'accesstoken', 'refreshtoken', 'idtoken', 'sessiontoken',
   'secret', 'clientsecret', 'password', 'apikey', 'xapikey', 'credential', 'credentials',
+  'proof', 'sessionproof', 'bootstrapcredential', 'runnerproof', 'csrftoken', 'xcsrftoken',
 ]);
 const serializerKeys = new Set(['__proto__', 'hasOwnProperty', 'toJSON']);
 const depthLimit = 64;

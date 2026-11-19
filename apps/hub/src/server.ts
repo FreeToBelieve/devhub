@@ -6,6 +6,7 @@ import { createLogger } from '@devhub/logger';
 import { inspectEnvironment } from '@devhub/runner';
 import { allowsLocalRequest } from '@devhub/security';
 import { openTaskStore } from '@devhub/storage';
+import { registerAuthorizationApi } from './authorization-api.js';
 
 interface ServerOptions {
   port: number;
@@ -13,6 +14,7 @@ interface ServerOptions {
   managedDataDirectory?: boolean;
   dashboardDirectory?: string;
   logger?: ReturnType<typeof createLogger>;
+  clock?: () => number;
 }
 
 export function createServer(options: ServerOptions): FastifyInstance {
@@ -23,7 +25,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
     requestIdHeader: false,
     bodyLimit: 32 * 1024,
   });
-  const tasks = openTaskStore(options.databasePath, options.managedDataDirectory);
+  const clock = options.clock ?? Date.now;
+  const tasks = openTaskStore(options.databasePath, options.managedDataDirectory, clock);
   app.addHook('onClose', async () => tasks.close());
 
   app.addHook('onRequest', async (request, reply) => {
@@ -66,6 +69,8 @@ export function createServer(options: ServerOptions): FastifyInstance {
     const task = tasks.create(input.data);
     return reply.code(201).header('Location', `/api/tasks/${task.id}`).send(task);
   });
+
+  registerAuthorizationApi(app, tasks, options.port, clock);
 
   app.setErrorHandler((error, request, reply) => {
     const status = error instanceof Error && 'statusCode' in error ? error.statusCode : undefined;
