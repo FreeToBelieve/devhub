@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import type { GitChange, GitDeliveryBinding, GitDeliveryInput, GitOperation, GitProjectInput } from '@devhub/contracts';
 import {
   applyDeliveryCommit, checkLocalGitRemote, createDeliveryCommit, gitCredentials, gitTransport,
-  localChangeSummary, localGitIdentity, prepareDeliveryBranch,
+  inspectCandidate, localGitIdentity, prepareDeliveryBranch,
 } from '@devhub/git-adapter';
 import type { GitCredentialManager } from '@devhub/git-adapter';
 import { gitProvider, GitProviderError, providerEndpoint } from '@devhub/git-provider';
@@ -21,13 +21,33 @@ const defaults: Dependencies = { credentials: gitCredentials, provider: gitProvi
 
 export function safeGitError(error: unknown) {
   if (error instanceof GitStateError || error instanceof GitProviderError) return error.code;
-  if (error instanceof Error && /^WORKSPACE_(?:SECRET|SNAPSHOT)_[A-Z_]+$/.test(error.message)) return error.message;
+  if (error instanceof Error && (/^WORKSPACE_(?:SECRET|SNAPSHOT)_[A-Z_]+$/.test(error.message) ||
+    error.message === 'GIT_SUBMODULE_WORKTREE_UNSUPPORTED')) return error.message;
   return 'GIT_OPERATION_FAILED';
 }
 
 export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defaults) {
   const store = tasks.git;
   const fail = (code: string): never => { throw new GitStateError(code); };
+  let draining: Promise<void> | undefined;
+
+  function retryCredentialCleanup() {
+    draining ??= (async () => {
+      const owner = randomUUID();
+      for (let count = 0; count < 32; count++) {
+        const job = store.claimCleanup(owner);
+        if (!job) break;
+        try {
+          await (await dependencies.credentials()).remove(job.reference);
+        } catch {
+          store.finishCleanup(job.reference, owner, 'GIT_VAULT_DELETE_FAILED');
+          continue;
+        }
+        store.finishCleanup(job.reference, owner, null);
+      }
+    })().finally(() => { draining = undefined; });
+    return draining;
+  }
 
   async function credential(projectId: string) {
     const connection = store.connection(projectId);
@@ -69,20 +89,18 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
     if (!remote.canPush) fail('GIT_PERMISSION_DENIED');
     const vault = await dependencies.credentials();
     const reference = randomUUID();
-    await vault.set(reference, input.token);
-    let previous: string | null;
+    store.reserveCredential(input.projectId, reference);
     try {
-      previous = store.connect({ projectId: input.projectId, provider: endpoint.provider,
+      await vault.set(reference, input.token);
+      store.connect({ projectId: input.projectId, provider: endpoint.provider,
         repositoryUrl: endpoint.repositoryUrl, apiBaseUrl: endpoint.apiBaseUrl, remoteId: remote.remoteId,
         account: remote.account, defaultBranch: remote.defaultBranch, credentialRef: reference }, expectedVersion, actor);
     } catch (error) {
-      await vault.remove(reference);
+      store.queueCleanup(reference);
+      await retryCredentialCleanup();
       throw error;
     }
-    if (previous) {
-      await vault.remove(previous);
-      store.removeReference(previous);
-    }
+    await retryCredentialCleanup();
     return store.connections().find((connection) => connection.projectId === input.projectId)!;
   }
 
@@ -116,8 +134,9 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
     if (base?.sha !== worktree.head) fail('GIT_HEAD_CHANGED');
     const existing = await context.provider.findPullRequest(input.branch, context.connection.defaultBranch);
     if (existing && existing.state !== 'open') fail('GIT_CHANGE_CLOSED');
-    const summary = await localChangeSummary(worktree.root, worktree.head);
-    if (!summary.changes.length) fail('GIT_NO_CHANGES');
+    const candidate = { ...await inspectCandidate(worktree.root, worktree.head, context.token),
+      workspaceSha256: worktree.workspaceSha256 };
+    const summary = { changes: candidate.changedFiles.map(({ path }) => path), diff: '', candidate };
     const live = await inspect(input, context.token);
     if (live.head !== worktree.head || live.workspaceSha256 !== worktree.workspaceSha256 ||
         live.task.revision !== worktree.task.revision) fail('GIT_WORKTREE_CHANGED');
@@ -126,12 +145,15 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
       ...input, projectId, connectionVersion: context.connection.version, targetBranch: context.connection.defaultBranch,
       worktreeRoot: worktree.root, repoId: worktree.repoId, head: worktree.head, workspaceSha256: worktree.workspaceSha256,
       taskRevision: worktree.task.revision, taskSpecSha256: taskSpecDigest(worktree.task), remoteHead: target?.sha ?? null,
+      candidateTreeSha: candidate.candidateTreeSha, candidateDiffDigest: candidate.candidateDiffDigest,
     };
     return { operation: store.preview(binding, summary, sha256(JSON.stringify({ binding, summary })), actor, operationId), ...summary };
   }
 
   async function apply(operation: GitOperation, actor: string, owner: string) {
     const { id, projectId, binding } = operation;
+    const candidateTreeSha = binding.candidateTreeSha;
+    if (!candidateTreeSha || !operation.summary.candidate?.canCommit) throw new GitStateError('GIT_CANDIDATE_REVIEW_REQUIRED');
     let phase = operation.phase;
     const context = await credential(projectId);
     checkConnection(projectId, binding.connectionVersion);
@@ -162,13 +184,13 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
       }
       commit = await createDeliveryCommit({
         root: binding.worktreeRoot, branch: binding.branch, expectedHead: binding.head, author: binding.author,
-        title: binding.title, verify: () => verify([binding.head]), saveCommit(sha) {
+        title: binding.title, candidateTreeSha, forbiddenText: context.token, verify: () => verify([binding.head]), saveCommit(sha) {
           store.advance(id, owner, 'COMMITTED', actor, { commitSha: sha });
         },
       });
       phase = 'COMMITTED';
     } else {
-      await applyDeliveryCommit(binding.worktreeRoot, 'refs/heads/' + binding.branch, binding.head, commit);
+      await applyDeliveryCommit(binding.worktreeRoot, 'refs/heads/' + binding.branch, binding.head, commit, candidateTreeSha);
     }
     await verify([commit]);
     const alreadyPushed = target?.sha === commit;
@@ -207,12 +229,10 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
     connect,
     prepare,
     preview,
+    retryCredentialCleanup,
     async revoke(projectId: string, version: number, actor: string) {
-      const reference = store.revoke(projectId, version, actor);
-      if (reference) {
-        await (await dependencies.credentials()).remove(reference);
-        store.removeReference(reference);
-      }
+      store.revoke(projectId, version, actor);
+      await retryCredentialCleanup();
     },
     async branches(projectId: string) {
       return (await credential(projectId)).provider.listBranches();

@@ -9,7 +9,7 @@ import { startDeveloperConnectProxy } from '@devhub/security';
 export const dependencyClientOperations = ['npm-install', 'pnpm-install', 'git-fetch', 'upm-download'] as const;
 export type DependencyClientOperation = typeof dependencyClientOperations[number];
 export const dependencyClientPolicy = Object.freeze({
-  version: 1, containment: 'macOS-Seatbelt', operations: dependencyClientOperations, timeoutMs: 120_000, maxCommands: 4,
+  version: 2, containment: 'macOS-Seatbelt', operations: dependencyClientOperations, timeoutMs: 120_000, maxCommands: 4,
   gitAttempts: 3, gitAttemptMs: 25_000,
 });
 
@@ -37,25 +37,44 @@ export function dependencySandbox(root: string, scratch: string, runtime: readon
   ].join('\n');
 }
 
-function run(executable: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number) {
-  return new Promise<number>((accept) => {
+export function gitFetchDiagnostic(stderr: string, timedOut = false) {
+  if (timedOut || /timed out|operation too slow|curl 28\b/i.test(stderr)) return 'GIT_FETCH_TIMEOUT';
+  if (/(?:response|HTTP code) 407\b|proxy authentication required/i.test(stderr)) return 'GIT_FETCH_PROXY_AUTH';
+  if (/certificate problem|certificate verification failed|SSL certificate|curl (?:51|60)\b/i.test(stderr)) return 'GIT_FETCH_TLS_CERTIFICATE';
+  if (/SSL connect error|SSL_ERROR|TLS alert|curl 35\b/i.test(stderr)) return 'GIT_FETCH_TLS_HANDSHAKE';
+  if (/HTTP\/2 stream|curl (?:16|92)\b/i.test(stderr)) return 'GIT_FETCH_HTTP2';
+  if (/could not resolve|failed to connect|CONNECT tunnel failed|curl (?:5|6|7)\b/i.test(stderr)) return 'GIT_FETCH_CONNECTION';
+  if (/connection reset|unexpected disconnect|early EOF|RPC failed|curl (?:18|52|55|56)\b/i.test(stderr)) return 'GIT_FETCH_TRANSFER';
+  if (/requested URL returned error|repository not found|could not read Username/i.test(stderr)) return 'GIT_FETCH_REMOTE_REJECTED';
+  return 'GIT_FETCH_FAILED';
+}
+
+function run(executable: string, args: readonly string[], cwd: string, env: NodeJS.ProcessEnv, timeoutMs: number, diagnoseGit = false) {
+  return new Promise<{ exitCode: number; diagnostic?: ReturnType<typeof gitFetchDiagnostic> }>((accept) => {
     let child;
     try {
-      child = spawn(executable, args, { cwd, env, stdio: 'ignore' });
+      child = spawn(executable, args, { cwd, env, stdio: ['ignore', 'ignore', diagnoseGit ? 'pipe' : 'ignore'] });
     } catch {
-      accept(-1);
+      accept({ exitCode: -1, ...(diagnoseGit ? { diagnostic: 'GIT_FETCH_FAILED' } : {}) });
       return;
     }
-    const timer = setTimeout(() => child.kill('SIGKILL'), timeoutMs);
-    child.once('error', () => { if (!child.pid) { clearTimeout(timer); accept(-1); } });
-    child.once('exit', (code) => { clearTimeout(timer); accept(code ?? -1); });
+    let timedOut = false;
+    let stderr = '';
+    child.stderr?.setEncoding('utf8').on('data', (chunk: string) => { stderr = (stderr + chunk).slice(-8192); });
+    const timer = setTimeout(() => { timedOut = true; child.stderr?.destroy(); child.kill('SIGKILL'); }, timeoutMs);
+    child.once('error', () => { if (!child.pid) { clearTimeout(timer); accept({ exitCode: -1 }); } });
+    child.once('close', (code) => {
+      clearTimeout(timer);
+      accept({ exitCode: code ?? -1, ...(diagnoseGit && code !== 0 ? { diagnostic: gitFetchDiagnostic(stderr, timedOut) } : {}) });
+    });
   });
 }
 
 export function runDependencySandboxed(executable: string, args: readonly string[], cwd: string,
   environment: NodeJS.ProcessEnv, profile: string, timeoutMs: number = dependencyClientPolicy.timeoutMs) {
   if (process.platform !== 'darwin' || !isAbsolute(executable)) throw new Error('PROXY_OS_CONTAINMENT_UNAVAILABLE');
-  return run('/usr/bin/sandbox-exec', ['-p', profile, executable, ...args], cwd, environment, timeoutMs);
+  return run('/usr/bin/sandbox-exec', ['-p', profile, executable, ...args], cwd, environment, timeoutMs)
+    .then(({ exitCode }) => exitCode);
 }
 
 function pinnedCli(tool: 'npm' | 'pnpm', node: string) {
@@ -93,7 +112,8 @@ export async function installDeveloperDependency(operation: DependencyClientOper
       executable = existsSync(commandLineGit) ? commandLineGit : '/usr/bin/git';
       cwd = join(scratch, 'git');
       await mkdir(cwd);
-      args = ['-c', 'http.version=HTTP/2', '-c', 'http.sslCAInfo=/etc/ssl/cert.pem', '-c', 'http.followRedirects=false',
+      args = ['-c', 'http.version=HTTP/2', '-c', 'http.sslCAInfo=/etc/ssl/cert.pem', '-c', 'http.sslVerify=true',
+        '-c', 'http.followRedirects=false', '-c', 'http.proxyAuthMethod=basic', '-c', 'http.lowSpeedLimit=1', '-c', 'http.lowSpeedTime=10',
         '-c', 'credential.helper=', '-c', 'protocol.allow=never', '-c', 'protocol.https.allow=always',
         '-c', 'core.hooksPath=/dev/null', 'fetch', '--no-tags', '--depth=1', remote, 'HEAD'];
     } else if (operation === 'upm-download') {
@@ -125,13 +145,14 @@ export async function installDeveloperDependency(operation: DependencyClientOper
       npm_config_userconfig: userConfig, npm_config_globalconfig: globalConfig,
       npm_config_cache: join(scratch, 'cache'), npm_config_manage_package_manager_versions: 'false',
       npm_config_loglevel: 'silent', npm_config_logs_max: '0', npm_config_timing: 'false',
-      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0',
+      GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', LC_ALL: 'C',
     };
     const policy = dependencySandbox(root, scratch, runtime, proxy.port);
     if (operation === 'git-fetch' && await runDependencySandboxed(executable, ['init', '--bare', '--quiet'], cwd, environment, policy) !== 0) {
       throw new Error('DEPENDENCY_GIT_SETUP_FAILED');
     }
     let exitCode = -1;
+    const gitAttempts: ReturnType<typeof gitFetchDiagnostic>[] = [];
     const target = proxy.clientProxyUrl();
     const networkEnvironment = {
       ...environment, HTTP_PROXY: target, HTTPS_PROXY: target, http_proxy: target, https_proxy: target,
@@ -140,7 +161,13 @@ export async function installDeveloperDependency(operation: DependencyClientOper
     const attempts = operation === 'git-fetch' ? dependencyClientPolicy.gitAttempts : 1;
     const timeout = operation === 'git-fetch' ? dependencyClientPolicy.gitAttemptMs : dependencyClientPolicy.timeoutMs;
     for (let attempt = 0; attempt < attempts && exitCode !== 0; attempt++) {
-      exitCode = await runDependencySandboxed(executable, args, cwd, networkEnvironment, policy, timeout);
+      if (operation === 'git-fetch') {
+        const result = await run('/usr/bin/sandbox-exec', ['-p', policy, executable, ...args], cwd, networkEnvironment, timeout, true);
+        exitCode = result.exitCode;
+        if (result.diagnostic) gitAttempts.push(result.diagnostic);
+      } else {
+        exitCode = await runDependencySandboxed(executable, args, cwd, networkEnvironment, policy, timeout);
+      }
     }
     if (artifact && exitCode !== 0) await rm(join(root, artifact), { force: true });
     if (artifact && exitCode === 0) {
@@ -152,6 +179,7 @@ export async function installDeveloperDependency(operation: DependencyClientOper
       throw new Error('DEPENDENCY_TRANSFER_FAILED');
     }
     return { exitCode, proxy: proxy.stats(), ...(artifact && exitCode === 0 ? { artifact } : {}),
+      ...(gitAttempts.length ? { gitDiagnostics: gitAttempts } : {}),
       ...(operation === 'git-fetch' && exitCode === 0 ? { gitHeadVerified: true } : {}) };
   } finally {
     if (proxy) await proxy.close();

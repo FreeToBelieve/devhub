@@ -80,7 +80,7 @@ try {
       name: 'devhub-connect-fixture', version: '1.0.0', private: true, dependencies: { 'is-number': '7.0.0' },
     }));
     const result = await installDeveloperDependency(operation, path,
-      operation === 'git-fetch' ? 'https://github.com/FreeToBelieve/devhub.git' : undefined);
+      operation === 'git-fetch' ? 'https://github.com/octocat/Spoon-Knife.git' : undefined);
     console.log(JSON.stringify({ operation, ...result }));
     assert.equal(result.exitCode, 0, operation);
     assert.ok(result.proxy.accepted > 0 && result.proxy.downloaded > 0, operation);

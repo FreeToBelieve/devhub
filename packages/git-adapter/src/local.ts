@@ -1,33 +1,9 @@
-import { execFile } from 'node:child_process';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { promisify } from 'node:util';
 import { deliveryBranchName, gitAuthorInput, gitHeadSchema } from '@devhub/contracts';
 import { GitProviderError, providerEndpoint } from '@devhub/git-provider';
 import type { Endpoint } from '@devhub/git-provider';
 
-const exec = promisify(execFile);
-const runtimeEnv = ['PATH', 'SystemRoot', 'SystemDrive', 'WINDIR', 'COMSPEC', 'PATHEXT', 'TMP', 'TEMP', 'TMPDIR'];
-const nullDevice = process.platform === 'win32' ? 'NUL' : '/dev/null';
-
-async function git(root: string, args: readonly string[], extra: NodeJS.ProcessEnv = {}, allowedCodes: readonly number[] = []) {
-  const env = Object.fromEntries(runtimeEnv.map((key) => [key, process.env[key]]));
-  try {
-    const { stdout } = await exec('git', [
-      '-C', root, '-c', 'core.hooksPath=' + nullDevice, '-c', 'core.fsmonitor=false', '-c', 'core.trustctime=true',
-      '-c', 'core.checkStat=default', '-c', 'core.untrackedCache=false', '-c', 'submodule.recurse=false',
-      '-c', 'protocol.allow=never', '-c', 'commit.gpgSign=false', '-c', 'core.logAllRefUpdates=true', ...args,
-    ], { env: { ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: nullDevice, GIT_TERMINAL_PROMPT: '0',
-      GIT_NO_REPLACE_OBJECTS: '1', GIT_NO_LAZY_FETCH: '1', GIT_ATTR_NOSYSTEM: '1', ...extra },
-      windowsHide: true, timeout: 100_000, maxBuffer: 4 * 1024 ** 2 });
-    return stdout;
-  } catch (error) {
-    const code = (error as { code?: unknown }).code;
-    if (typeof code === 'number' && allowedCodes.includes(code)) return '';
-    throw new GitProviderError('GIT_LOCAL_COMMAND_FAILED');
-  }
-}
+import { git } from './git-process.js';
+import { withCandidate } from './candidate.js';
 
 export async function checkLocalGitRemote(root: string, endpoint: Endpoint) {
   const config = await git(root, ['config', '--includes', '--null', '--list']);
@@ -73,55 +49,45 @@ export async function prepareDeliveryBranch(root: string, branch: string, expect
   return target;
 }
 
-export async function localChangeSummary(root: string, head: string) {
-  const expected = gitHeadSchema.parse(head);
-  const [status, diff] = await Promise.all([
-    git(root, ['status', '--porcelain=v1', '-z', '--no-renames', '--untracked-files=all', '--ignore-submodules=all']),
-    git(root, ['diff', '--no-textconv', '--no-ext-diff', '--no-renames', '--stat', expected, '--', '.']),
-  ]);
-  return { changes: status.split('\0').filter(Boolean), diff: diff.slice(0, 30_000) };
-}
-
 export async function createDeliveryCommit(input: {
-  root: string; branch: string; expectedHead: string; author: { name: string; email: string }; title: string;
+  root: string; branch: string; expectedHead: string; candidateTreeSha: string;
+  author: { name: string; email: string }; title: string; forbiddenText?: string;
   verify: () => Promise<void>; saveCommit: (sha: string) => void;
 }) {
   const { root, expectedHead } = input;
   const author = gitAuthorInput.parse(input.author);
-  const ref = await prepareDeliveryBranch(root, input.branch, expectedHead);
-  const scratch = await mkdtemp(join(tmpdir(), 'devhub-index-'));
-  try {
-    const GIT_INDEX_FILE = join(scratch, 'index');
-    const index = { GIT_INDEX_FILE };
-    await input.verify();
-    await git(root, ['read-tree', expectedHead], index);
-    await git(root, ['add', '--all', '--', '.'], index);
-    // Re-read source files and prove the staged tree still corresponds to those exact bytes.
-    await input.verify();
-    const staged = gitHeadSchema.parse((await git(root, ['write-tree'], index)).trim());
-    const verification = { GIT_INDEX_FILE: join(scratch, 'verify') };
-    await git(root, ['read-tree', expectedHead], verification);
-    await git(root, ['add', '--all', '--', '.'], verification);
-    if ((await git(root, ['write-tree'], verification)).trim() !== staged) {
-      throw new GitProviderError('GIT_WORKTREE_CHANGED');
+  const approvedTree = gitHeadSchema.parse(input.candidateTreeSha);
+  await input.verify();
+  return withCandidate(root, expectedHead, input.forbiddenText, async (candidate) => {
+    if (!candidate.summary.canCommit || candidate.summary.candidateTreeSha !== approvedTree) {
+      throw new GitProviderError('GIT_CANDIDATE_TREE_CHANGED');
     }
     await input.verify();
-    const existing = (await git(root, ['rev-parse', expectedHead + '^{tree}'])).trim();
-    if (existing === staged) throw new GitProviderError('GIT_NO_CHANGES');
-    const sha = gitHeadSchema.parse((await git(root, ['commit-tree', staged, '-p', expectedHead, '-m', input.title], {
-      ...index, GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email,
+    const ref = await prepareDeliveryBranch(root, input.branch, expectedHead);
+    // Copy only the approved, scanned objects into the repository.
+    await candidate.importObjects();
+    const sha = gitHeadSchema.parse((await git(root, ['commit-tree', approvedTree, '-p', expectedHead, '-m', input.title], {
+      GIT_AUTHOR_NAME: author.name, GIT_AUTHOR_EMAIL: author.email,
       GIT_COMMITTER_NAME: author.name, GIT_COMMITTER_EMAIL: author.email,
     })).trim());
-    // Journal the object before changing the branch so retries can recover either outcome.
+    await verifyCommitTree(root, sha, approvedTree);
+    await input.verify();
     input.saveCommit(sha);
-    await applyDeliveryCommit(root, ref, expectedHead, sha);
+    await applyDeliveryCommit(root, ref, expectedHead, sha, approvedTree);
     return sha;
-  } finally { await rm(scratch, { recursive: true, force: true }); }
+  });
 }
 
-export async function applyDeliveryCommit(root: string, ref: string, previous: string, sha: string) {
+async function verifyCommitTree(root: string, sha: string, approvedTree: string) {
+  if ((await git(root, ['rev-parse', sha + '^{tree}'])).trim() !== gitHeadSchema.parse(approvedTree)) {
+    throw new GitProviderError('GIT_CANDIDATE_TREE_CHANGED');
+  }
+}
+
+export async function applyDeliveryCommit(root: string, ref: string, previous: string, sha: string, approvedTree: string) {
   const approvedRef = 'refs/heads/' + deliveryBranchName.parse(ref.replace(/^refs\/heads\//, ''));
   const object = gitHeadSchema.parse(sha);
+  await verifyCommitTree(root, object, approvedTree);
   const current = await localGitIdentity(root);
   if (current.ref !== approvedRef || (current.head !== previous && current.head !== object)) {
     throw new GitProviderError('GIT_WORKTREE_CHANGED');

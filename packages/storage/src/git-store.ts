@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import type { GitChange, GitConnection, GitDeliveryApproval, GitDeliveryBinding, GitOperation, GitReview } from '@devhub/contracts';
+import { gitCandidateStaleCodes } from '@devhub/contracts';
 import { immediate } from './migrations.js';
 
 export class GitStateError extends Error {
@@ -8,6 +9,10 @@ export class GitStateError extends Error {
 }
 
 type SecureConnection = Omit<GitConnection, 'connected'> & { credentialRef: string | null };
+export interface GitCredentialCleanupJob {
+  reference: string;
+  attempts: number;
+}
 const connections = `SELECT c.project_id AS projectId, g.kind AS provider, c.repository_url AS repositoryUrl,
   g.api_base_url AS apiBaseUrl, c.remote_id AS remoteId, c.default_branch AS defaultBranch, c.account,
   c.version, c.credential_ref AS credentialRef FROM project_provider_connections c
@@ -33,6 +38,11 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
     if (draft.version !== input.expectedVersion || draft.digest !== input.digest) throw new GitStateError('GIT_APPROVAL_STALE');
     return draft;
   }
+  function queueCleanup(reference: string, nextAttempt = clock()) {
+    sql(`INSERT INTO git_credential_cleanup(credential_ref, next_attempt_at) VALUES (?, ?)
+      ON CONFLICT(credential_ref) DO UPDATE SET next_attempt_at=MIN(next_attempt_at, excluded.next_attempt_at)`)
+      .run(reference, nextAttempt);
+  }
 
   return {
     connection,
@@ -40,6 +50,13 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
       return (sql(connections + ' ORDER BY c.project_id').all() as unknown as SecureConnection[]).map(
         ({ credentialRef, ...row }) => ({ ...row, connected: credentialRef !== null }));
     },
+    reserveCredential(projectId: string, reference: string) {
+      immediate(database, () => {
+        sql('INSERT INTO git_credentials_refs(id, project_id, created_at) VALUES (?,?,?)').run(reference, projectId, clock());
+        queueCleanup(reference, clock() + 5 * 60_000);
+      });
+    },
+    queueCleanup,
     connect(input: Omit<SecureConnection, 'version'> & { credentialRef: string }, expectedVersion: number, actor: string) {
       return immediate(database, () => {
         const previous = connection(input.projectId);
@@ -52,32 +69,63 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
         sql('INSERT INTO git_providers(id, kind, api_base_url) VALUES (?,?,?) ON CONFLICT DO NOTHING')
           .run(providerId, input.provider, input.apiBaseUrl);
         const provider = sql('SELECT id FROM git_providers WHERE kind=? AND api_base_url=?').get(input.provider, input.apiBaseUrl);
-        sql('INSERT INTO git_credentials_refs(id, project_id, created_at) VALUES (?,?,?)')
-          .run(input.credentialRef, input.projectId, clock());
+        const reserved = sql(`DELETE FROM git_credential_cleanup WHERE credential_ref=? AND owner IS NULL
+          AND EXISTS (SELECT 1 FROM git_credentials_refs WHERE id=? AND project_id=?)`)
+          .run(input.credentialRef, input.credentialRef, input.projectId);
+        if (reserved.changes !== 1) throw new GitStateError('GIT_CREDENTIAL_RESERVATION_EXPIRED');
         sql(`INSERT INTO project_provider_connections(project_id, provider_id, credential_ref, repository_url, remote_id, default_branch, account, version)
           VALUES (?,?,?,?,?,?,?,?) ON CONFLICT(project_id) DO UPDATE SET credential_ref=excluded.credential_ref,
           default_branch=excluded.default_branch, account=excluded.account, version=excluded.version`)
           .run(input.projectId, String(provider?.id), input.credentialRef, input.repositoryUrl, input.remoteId,
             input.defaultBranch, input.account, expectedVersion + 1);
         audit(input.projectId, null, actor, previous ? 'REAUTHORIZED' : 'CONNECTED');
-        return previous?.credentialRef ?? null;
+        if (previous?.credentialRef) queueCleanup(previous.credentialRef);
       });
     },
     revoke(projectId: string, version: number, actor: string) {
       return immediate(database, () => {
         const previous = connection(projectId);
-        if (!previous || version !== previous.version) throw new GitStateError('GIT_CONNECTION_CHANGED');
+        if (!previous || version !== previous.version && (previous.credentialRef || version !== previous.version - 1)) {
+          throw new GitStateError('GIT_CONNECTION_CHANGED');
+        }
         if (sql('SELECT 1 FROM git_operations WHERE project_id=? AND owner IS NOT NULL').get(projectId)) {
           throw new GitStateError('GIT_WORKTREE_BUSY');
         }
-        if (!previous.credentialRef) return null;
+        if (!previous.credentialRef) return;
         sql('UPDATE project_provider_connections SET credential_ref=NULL, version=version+1 WHERE project_id=?').run(projectId);
+        queueCleanup(previous.credentialRef);
         audit(projectId, null, actor, 'REVOKED');
-        return previous.credentialRef;
       });
     },
-    removeReference(reference: string) {
-      sql('DELETE FROM git_credentials_refs WHERE id=?').run(reference);
+    claimCleanup(owner: string): GitCredentialCleanupJob | undefined {
+      const now = clock();
+      return sql(`UPDATE git_credential_cleanup SET owner=?, lease_until=?
+        WHERE credential_ref = (
+          SELECT q.credential_ref FROM git_credential_cleanup q WHERE q.next_attempt_at<=?
+            AND (q.owner IS NULL OR q.lease_until<=?)
+            AND NOT EXISTS (SELECT 1 FROM project_provider_connections c WHERE c.credential_ref=q.credential_ref)
+          ORDER BY q.next_attempt_at, q.credential_ref LIMIT 1
+        ) RETURNING credential_ref AS reference, attempts`).get(owner, now + 60_000, now, now) as GitCredentialCleanupJob | undefined;
+    },
+    finishCleanup(reference: string, owner: string, error: 'GIT_VAULT_DELETE_FAILED' | null) {
+      immediate(database, () => {
+        const job = sql('SELECT attempts FROM git_credential_cleanup WHERE credential_ref=? AND owner=?').get(reference, owner);
+        if (!job) return;
+        if (error) {
+          const attempts = Number(job.attempts) + 1;
+          const retry = Math.min(5 * 60_000, 1000 * 2 ** Math.min(attempts - 1, 9));
+          sql(`UPDATE git_credential_cleanup SET attempts=?, last_error_code=?, next_attempt_at=?, owner=NULL, lease_until=NULL
+            WHERE credential_ref=? AND owner=?`).run(attempts, error, clock() + retry, reference, owner);
+          return;
+        }
+        sql('DELETE FROM git_credential_cleanup WHERE credential_ref=? AND owner=?').run(reference, owner);
+        sql('DELETE FROM git_credentials_refs WHERE id=?').run(reference);
+      });
+    },
+    cleanupStatus(projectId: string) {
+      return sql(`SELECT q.attempts, q.last_error_code AS lastErrorCode, q.next_attempt_at AS nextAttemptAt
+        FROM git_credential_cleanup q JOIN git_credentials_refs r ON q.credential_ref=r.id WHERE r.project_id=?
+        ORDER BY q.next_attempt_at`).all(projectId);
     },
     operation,
     operations(projectId: string) {
@@ -101,6 +149,10 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
     approve(id: string, input: GitDeliveryApproval, actor: string) {
       return immediate(database, () => {
         const draft = approved(id, input);
+        if (!draft.binding.candidateTreeSha || !draft.summary.candidate?.canCommit ||
+            draft.errorCode && gitCandidateStaleCodes.includes(draft.errorCode)) {
+          throw new GitStateError('GIT_CANDIDATE_REVIEW_REQUIRED');
+        }
         if (draft.phase === 'DELIVERED' || sql('SELECT 1 FROM git_operations WHERE id=? AND owner IS NOT NULL').get(id)) {
           throw new GitStateError('GIT_OPERATION_BUSY');
         }

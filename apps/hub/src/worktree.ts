@@ -77,6 +77,9 @@ export async function inspectWorktree(path: string, scope?: ExecutionScope, allo
     throw new Error('Worktrees with external Git filters are outside the execution policy.');
   }
   const index = await git(root, ['ls-files', '-v', '--stage', '-z']);
+  if (index.split('\0').some((entry) => /^H 160000 /.test(entry))) {
+    throw new Error('GIT_SUBMODULE_WORKTREE_UNSUPPORTED');
+  }
   if (index.split('\0').some((entry) => entry && !/^H (?:100644|100755|120000) [a-f0-9]+ 0\t/.test(entry))) {
     throw new Error('Git submodules, sparse or hidden index entries are outside the execution policy.');
   }

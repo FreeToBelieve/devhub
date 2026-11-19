@@ -68,6 +68,15 @@ export function publicGitAddress(addresses: readonly string[]) {
   return first;
 }
 
+export function gitHttpsFailure(error: unknown) {
+  const code = (error as NodeJS.ErrnoException | null)?.code ?? '';
+  if (/^(?:ERR_TLS_CERT_|CERT_|UNABLE_TO_(?:GET_ISSUER_CERT|VERIFY_LEAF_SIGNATURE)|DEPTH_ZERO_SELF_SIGNED_CERT|SELF_SIGNED_CERT_IN_CHAIN)/.test(code)) {
+    return 'GIT_TLS_CERTIFICATE_REJECTED';
+  }
+  if (/^ERR_SSL_|^ERR_TLS_/.test(code)) return 'GIT_TLS_HANDSHAKE_FAILED';
+  return 'GIT_NETWORK_UNAVAILABLE';
+}
+
 async function resolveGitAddresses(hostname: string) {
   function emptyAnswer(error: NodeJS.ErrnoException) {
     if (error.code === 'ENODATA' || error.code === 'ENOTFOUND') return [];
@@ -105,7 +114,7 @@ export async function openGitHttps(
           reject(new GitProviderError('GIT_REDIRECT_DENIED'));
         } else accept(result);
       });
-      upstream.once('error', () => { agent.destroy(); reject(failure()); });
+      upstream.once('error', (error) => { agent.destroy(); reject(new GitProviderError(gitHttpsFailure(error))); });
       if (typeof body === 'string') upstream.end(body);
       else if (body) {
         body.once('error', () => upstream.destroy());
