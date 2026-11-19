@@ -7,13 +7,14 @@ import { addDetachedWorktree, inspectWorktree } from './worktree.js';
 
 import { snapshotWorkspace } from './workspace-snapshot.js';
 
-export async function inspectCodexWorktree(location: string, networkMode: DeveloperNetworkMode = 'OFF', fresh = false) {
+export async function inspectCodexWorktree(location: string, networkMode: DeveloperNetworkMode = 'OFF', fresh = false,
+  forbiddenText?: string) {
   const identity = await inspectWorktree(location, undefined, true);
   const marker = await lstat(join(identity.root, '.git'));
   if (!identity.linked || !marker.isFile() || marker.isSymbolicLink() || marker.nlink !== 1) {
     throw new Error('A DevHub-managed linked Git worktree is required.');
   }
-  const snapshot = await snapshotWorkspace(identity.root, { fresh });
+  const snapshot = await snapshotWorkspace(identity.root, { fresh, forbiddenText });
   const after = await inspectWorktree(location, undefined, true);
   if (after.worktreeId !== identity.worktreeId || after.baseHeadSha !== identity.baseHeadSha) {
     throw new Error('Git changed during the Codex worktree inspection.');

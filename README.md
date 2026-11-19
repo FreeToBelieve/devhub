@@ -1,6 +1,6 @@
 # ShanHe DevHub
 
-《山河问仙》的本机开发工作台。Sprint 1 提供任务录入、任务查询、SQLite 持久化和开发环境检测。Codex 执行、GitLab 合并请求与 Unity 测试的集成由后续 Sprint 实现。
+《山河问仙》的本机开发工作台，支持任务管理、Codex 执行授权、受管工作树，以及 GitHub 和 GitLab 代码交付。
 
 ## 启动
 
@@ -106,6 +106,19 @@ Dashboard 的「Codex 执行」增量读取脱敏事件和诊断，可请求取�
 下载代理、运行时审批、快照和生命周期的详细边界见 [Sprint 2.3B 设计](project_work/requirement_docs/sprint-2-developer-mode.md) 和 [验收记录](project_work/test_case/sprint-2-developer-mode.md)。
 
 macOS 可在授权中心为本次 Turn 选择 `DEVELOPER_CONNECT`，运行受控 npm、pnpm、Git 和 Unity 公共归档命令。工作树秘密检测、CONNECT 网络边界及 VM Runner 方案见 [Sprint 2.3C 设计](project_work/requirement_docs/sprint-2-developer-completion.md) 和 [验收报告](project_work/test_case/sprint-2-developer-completion.md)。
+
+## GitHub 和 GitLab 交付
+
+首次配置使用独立测试仓库。登录授权中心后，打开「Git 管理」，登记仓库 HTTPS URL 和该项目的令牌。GitHub 使用目标仓库的 Contents 与 Pull requests 读写、Checks 与 Commit statuses 读取权限。GitLab 需要 MR API 访问和 Git 写入权限。自建 GitLab 可设置例如 `https://gitlab.example.com:9998/api/v4` 的 API Base URL，使用与仓库相同的 HTTPS origin、可验证的证书和公网 IPv4 或 IPv6 DNS。撤销按钮清理当前 DevHub 的系统凭据引用和条目，服务端令牌可在 Provider 设置中吊销。
+
+直连不稳定时可在 Hub 中显式设置 `DEVHUB_GIT_HTTPS_PROXY=http://127.0.0.1:7890`，指向操作员信任的本机 CONNECT 代理。DevHub 仍逐次解析并固定公网 IP，在隧道内校验原主机的 TLS 证书。这项配置只应用于 Hub 的 Git 集成。
+
+1. 用干净的本地克隆创建 `devhub/` 开发分支和受管 Worktree。源克隆 HEAD 须与远端默认分支一致。
+2. 在授权中心批准 Codex 任务。任务结束后回到 Git 管理页，选择任务和 Worktree，填写 Git 作者和 PR/MR 说明。
+3. 审查变更清单并批准摘要。两分钟内执行交付，依次确认本地 Commit、远端 Push 和 PR/MR。失败可检查阶段和诊断，重新批准原记录并继续。
+4. 在 PR/MR 详情读取差异、评论与 CI。编辑已审阅的指令并创建续跑申请，再按 Codex 命令审批和运行。使用同一个 Worktree 交付，已有 PR/MR 会更新。
+
+凭据保存在 macOS Keychain 或 Windows Credential Manager。Git 元数据和远端写入由 DevHub 负责。交付功能只推送开发分支，不提供强推和合并。安全设计与平台记录见 [Sprint 2.4 设计](project_work/requirement_docs/sprint-2-git-providers.md) 和 [验收报告](project_work/test_case/sprint-2-git-providers.md)。
 
 ## 开发验证
 

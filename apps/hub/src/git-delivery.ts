@@ -1,0 +1,265 @@
+import { randomUUID } from 'node:crypto';
+import type { GitChange, GitDeliveryBinding, GitDeliveryInput, GitOperation, GitProjectInput } from '@devhub/contracts';
+import {
+  applyDeliveryCommit, checkLocalGitRemote, createDeliveryCommit, gitCredentials, gitTransport,
+  localChangeSummary, localGitIdentity, prepareDeliveryBranch,
+} from '@devhub/git-adapter';
+import type { GitCredentialManager } from '@devhub/git-adapter';
+import { gitProvider, GitProviderError, providerEndpoint } from '@devhub/git-provider';
+import { containsWorkspaceSecret, sha256 } from '@devhub/security';
+import { GitStateError, taskSpecDigest } from '@devhub/storage';
+import type { TaskStore } from '@devhub/storage';
+import { createCodexWorktree, inspectCodexWorktree } from './codex-worktree.js';
+
+interface Dependencies {
+  credentials: () => Promise<GitCredentialManager>;
+  provider: typeof gitProvider;
+  transfer: typeof gitTransport;
+}
+
+const defaults: Dependencies = { credentials: gitCredentials, provider: gitProvider, transfer: gitTransport };
+
+export function safeGitError(error: unknown) {
+  if (error instanceof GitStateError || error instanceof GitProviderError) return error.code;
+  if (error instanceof Error && /^WORKSPACE_(?:SECRET|SNAPSHOT)_[A-Z_]+$/.test(error.message)) return error.message;
+  return 'GIT_OPERATION_FAILED';
+}
+
+export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defaults) {
+  const store = tasks.git;
+  const fail = (code: string): never => { throw new GitStateError(code); };
+
+  async function credential(projectId: string) {
+    const connection = store.connection(projectId);
+    if (!connection?.credentialRef) throw new GitStateError('GIT_CONNECTION_REQUIRED');
+    const vault = await dependencies.credentials();
+    const token = await vault.get(connection.credentialRef);
+    if (!token) throw new GitStateError('GIT_CREDENTIAL_MISSING');
+    const endpoint = providerEndpoint(connection.provider, connection.repositoryUrl, connection.apiBaseUrl);
+    const provider = dependencies.provider(endpoint, token);
+    const repository = await provider.getRepository();
+    if (repository.remoteId !== connection.remoteId || repository.defaultBranch !== connection.defaultBranch) {
+      fail('GIT_REMOTE_CHANGED');
+    }
+    return { connection, token, endpoint, provider, repository };
+  }
+
+  function checkConnection(projectId: string, version: number) {
+    if (store.connection(projectId)?.version !== version) fail('GIT_CONNECTION_CHANGED');
+  }
+
+  async function inspect(binding: Pick<GitDeliveryInput, 'worktreeId' | 'taskId' | 'branch'>, token: string) {
+    const worktree = tasks.execution.getWorktree(binding.worktreeId);
+    const task = tasks.get(binding.taskId);
+    if (!worktree || !tasks.codex.manages(worktree.worktreeId) || !task) throw new GitStateError('GIT_WORKTREE_REQUIRED');
+    const live = await inspectCodexWorktree(worktree.root, 'OFF', true, token);
+    const git = await localGitIdentity(live.root);
+    if (live.repoId !== worktree.repoId || live.worktreeId !== worktree.worktreeId || live.baseHeadSha !== git.head ||
+        (git.ref && git.ref !== 'refs/heads/' + binding.branch)) fail('GIT_WORKTREE_CHANGED');
+    return { ...live, ...git, task };
+  }
+
+  function checkText(text: string, token: string) {
+    if (text.includes(token) || containsWorkspaceSecret(text)) fail('WORKSPACE_SECRET_DETECTED');
+  }
+
+  async function connect(input: GitProjectInput, expectedVersion: number, actor: string) {
+    const endpoint = providerEndpoint(input.provider, input.repositoryUrl, input.apiBaseUrl);
+    const remote = await dependencies.provider(endpoint, input.token).validateConnection();
+    if (!remote.canPush) fail('GIT_PERMISSION_DENIED');
+    const vault = await dependencies.credentials();
+    const reference = randomUUID();
+    await vault.set(reference, input.token);
+    let previous: string | null;
+    try {
+      previous = store.connect({ projectId: input.projectId, provider: endpoint.provider,
+        repositoryUrl: endpoint.repositoryUrl, apiBaseUrl: endpoint.apiBaseUrl, remoteId: remote.remoteId,
+        account: remote.account, defaultBranch: remote.defaultBranch, credentialRef: reference }, expectedVersion, actor);
+    } catch (error) {
+      await vault.remove(reference);
+      throw error;
+    }
+    if (previous) {
+      await vault.remove(previous);
+      store.removeReference(previous);
+    }
+    return store.connections().find((connection) => connection.projectId === input.projectId)!;
+  }
+
+  async function prepare(projectId: string, repositoryRoot: string, targetDirectory: string, branch: string, actor: string) {
+    const context = await credential(projectId);
+    const base = await context.provider.getBranch(context.connection.defaultBranch);
+    if (!base || branch === base.name || await context.provider.getBranch(branch)) fail('GIT_BRANCH_PROTECTED');
+    await checkLocalGitRemote(repositoryRoot, context.endpoint);
+    const current = await localGitIdentity(repositoryRoot);
+    if (current.head !== base?.sha) fail('GIT_HEAD_CHANGED');
+    checkConnection(projectId, context.connection.version);
+    const worktree = await createCodexWorktree(repositoryRoot, targetDirectory);
+    if (worktree.baseHeadSha !== current.head) fail('GIT_HEAD_CHANGED');
+    await prepareDeliveryBranch(worktree.root, branch, current.head);
+    tasks.execution.registerWorktree(worktree);
+    tasks.codex.manage(worktree.worktreeId);
+    store.audit(projectId, null, actor, 'WORKTREE_CREATED');
+    return worktree;
+  }
+
+  async function preview(projectId: string, input: GitDeliveryInput, actor: string, operationId: string) {
+    if (store.busy(input.worktreeId)) fail('GIT_WORKTREE_BUSY');
+    const context = await credential(projectId);
+    checkText([input.title, input.description, input.author.name, input.author.email].join('\n'), context.token);
+    const worktree = await inspect(input, context.token);
+    await checkLocalGitRemote(worktree.root, context.endpoint);
+    if (!context.repository.canPush || input.branch === context.connection.defaultBranch) fail('GIT_BRANCH_PROTECTED');
+    const target = await context.provider.getBranch(input.branch);
+    if (target?.protected) fail('GIT_BRANCH_PROTECTED');
+    const base = target ?? await context.provider.getBranch(context.connection.defaultBranch);
+    if (base?.sha !== worktree.head) fail('GIT_HEAD_CHANGED');
+    const existing = await context.provider.findPullRequest(input.branch, context.connection.defaultBranch);
+    if (existing && existing.state !== 'open') fail('GIT_CHANGE_CLOSED');
+    const summary = await localChangeSummary(worktree.root, worktree.head);
+    if (!summary.changes.length) fail('GIT_NO_CHANGES');
+    const live = await inspect(input, context.token);
+    if (live.head !== worktree.head || live.workspaceSha256 !== worktree.workspaceSha256 ||
+        live.task.revision !== worktree.task.revision) fail('GIT_WORKTREE_CHANGED');
+    checkConnection(projectId, context.connection.version);
+    const binding: GitDeliveryBinding = {
+      ...input, projectId, connectionVersion: context.connection.version, targetBranch: context.connection.defaultBranch,
+      worktreeRoot: worktree.root, repoId: worktree.repoId, head: worktree.head, workspaceSha256: worktree.workspaceSha256,
+      taskRevision: worktree.task.revision, taskSpecSha256: taskSpecDigest(worktree.task), remoteHead: target?.sha ?? null,
+    };
+    return { operation: store.preview(binding, summary, sha256(JSON.stringify({ binding, summary })), actor, operationId), ...summary };
+  }
+
+  async function apply(operation: GitOperation, actor: string, owner: string) {
+    const { id, projectId, binding } = operation;
+    let phase = operation.phase;
+    const context = await credential(projectId);
+    checkConnection(projectId, binding.connectionVersion);
+    if (!context.repository.canPush || binding.branch === context.connection.defaultBranch ||
+        binding.targetBranch !== context.connection.defaultBranch) fail('GIT_BRANCH_PROTECTED');
+    async function verify(expected: readonly string[]) {
+      checkConnection(projectId, binding.connectionVersion);
+      const live = await inspect(binding, context.token);
+      if (live.root !== binding.worktreeRoot || live.repoId !== binding.repoId ||
+          live.workspaceSha256 !== binding.workspaceSha256 || !expected.includes(live.head) ||
+          live.task.revision !== binding.taskRevision || taskSpecDigest(live.task) !== binding.taskSpecSha256) {
+        fail('GIT_WORKTREE_CHANGED');
+      }
+      await checkLocalGitRemote(live.root, context.endpoint);
+    }
+    await verify(operation.commitSha ? [binding.head, operation.commitSha] : [binding.head]);
+    const existing = await context.provider.findPullRequest(binding.branch, binding.targetBranch);
+    if (existing && existing.state !== 'open') fail('GIT_CHANGE_CLOSED');
+    const target = await context.provider.getBranch(binding.branch);
+    if (target?.protected || (target?.sha ?? null) !== binding.remoteHead && target?.sha !== operation.commitSha) {
+      fail('GIT_REMOTE_CHANGED');
+    }
+
+    let commit = operation.commitSha;
+    if (!commit) {
+      if (!binding.remoteHead && (await context.provider.getBranch(binding.targetBranch))?.sha !== binding.head) {
+        fail('GIT_REMOTE_CHANGED');
+      }
+      commit = await createDeliveryCommit({
+        root: binding.worktreeRoot, branch: binding.branch, expectedHead: binding.head, author: binding.author,
+        title: binding.title, verify: () => verify([binding.head]), saveCommit(sha) {
+          store.advance(id, owner, 'COMMITTED', actor, { commitSha: sha });
+        },
+      });
+      phase = 'COMMITTED';
+    } else {
+      await applyDeliveryCommit(binding.worktreeRoot, 'refs/heads/' + binding.branch, binding.head, commit);
+    }
+    await verify([commit]);
+    const alreadyPushed = target?.sha === commit;
+    if (!alreadyPushed) {
+      if (phase === 'PUSHED') fail('GIT_REMOTE_CHANGED');
+      await dependencies.transfer({ root: binding.worktreeRoot, endpoint: context.endpoint, token: context.token,
+        operation: { kind: 'push', branch: binding.branch, sha: commit, remoteSha: binding.remoteHead } });
+    }
+    const observed = await context.provider.getBranch(binding.branch);
+    if (!observed || observed.sha !== commit || observed.protected) fail('GIT_PUSH_UNCONFIRMED');
+    if (phase !== 'PUSHED') store.advance(id, owner, 'PUSHED', actor);
+    checkConnection(projectId, binding.connectionVersion);
+    const text = { title: binding.title, description: binding.description };
+    let change = existing && store.changes(projectId).some(({ number }) => number === existing.number)
+      ? await mutateChange(projectId, existing.number, id, sha256(JSON.stringify(text)),
+        () => context.provider.updatePullRequest(existing.number, text))
+      : existing ? await context.provider.updatePullRequest(existing.number, text)
+        : await context.provider.createPullRequest({ ...text, sourceBranch: binding.branch, targetBranch: binding.targetBranch });
+    if (change.headSha !== commit) change = await context.provider.getPullRequest(change.number);
+    if (change.state !== 'open' || change.headSha !== commit) fail('GIT_CHANGE_UNCONFIRMED');
+    store.recordChange(projectId, change);
+    return store.advance(id, owner, 'DELIVERED', actor, { changeNumber: change.number });
+  }
+
+  function knownChange(projectId: string, number: number) {
+    if (!store.changes(projectId).some((change) => change.number === number)) fail('GIT_CHANGE_NOT_FOUND');
+  }
+
+  async function mutateChange<T>(projectId: string, number: number, key: string, digest: string, run: () => Promise<T>) {
+    const claimedAt = store.claimMutation(projectId, number, key, digest);
+    try { return await run(); }
+    finally { store.releaseMutation(projectId, number, key, claimedAt); }
+  }
+
+  return {
+    connect,
+    prepare,
+    preview,
+    async revoke(projectId: string, version: number, actor: string) {
+      const reference = store.revoke(projectId, version, actor);
+      if (reference) {
+        await (await dependencies.credentials()).remove(reference);
+        store.removeReference(reference);
+      }
+    },
+    async branches(projectId: string) {
+      return (await credential(projectId)).provider.listBranches();
+    },
+    async execute(id: string, approval: { expectedVersion: number; digest: string }, actor: string) {
+      const owner = randomUUID();
+      const operation = store.claim(id, approval, actor, owner);
+      if (operation.phase === 'DELIVERED') return operation;
+      let errorCode: string | null = null;
+      try { return await apply(operation, actor, owner); }
+      catch (error) {
+        errorCode = safeGitError(error);
+        throw error;
+      } finally { store.release(id, owner, actor, errorCode); }
+    },
+    async details(projectId: string, number: number) {
+      knownChange(projectId, number);
+      const { provider } = await credential(projectId);
+      const change = await provider.getPullRequest(number);
+      const [diff, reviews, checks] = await Promise.all([
+        provider.getPullRequestDiff(number), provider.listPullRequestComments(number), provider.getChecks(change),
+      ]);
+      store.recordChange(projectId, change, reviews);
+      return { change, diff, reviews, checks };
+    },
+    async change(projectId: string, number: number, actor: string,
+      input: { action: 'update'; title: string; description: string } | { action: 'close' } | { action: 'comment'; body: string; key: string },
+      requestKey: string = randomUUID()) {
+      knownChange(projectId, number);
+      const { provider, token, connection } = await credential(projectId);
+      return mutateChange(projectId, number, input.action === 'comment' ? input.key : requestKey, sha256(JSON.stringify(input)), async () => {
+        checkConnection(projectId, connection.version);
+        if (input.action === 'comment') {
+          checkText(input.body, token);
+          const note = await provider.createPullRequestComment(number, input.body, input.key);
+          store.audit(projectId, null, actor, 'COMMENT_CONFIRMED');
+          return note;
+        }
+        let outcome: GitChange;
+        if (input.action === 'update') {
+          checkText(input.title + '\n' + input.description, token);
+          outcome = await provider.updatePullRequest(number, input);
+        } else outcome = await provider.closePullRequest(number);
+        store.recordChange(projectId, outcome);
+        store.audit(projectId, null, actor, input.action === 'close' ? 'CHANGE_CLOSED' : 'CHANGE_UPDATED');
+        return outcome;
+      });
+    },
+  };
+}

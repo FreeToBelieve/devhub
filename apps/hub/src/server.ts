@@ -13,6 +13,7 @@ interface ServerOptions {
   databasePath: string;
   managedDataDirectory?: boolean;
   dashboardDirectory?: string;
+  codexWorktreeRoot?: string;
   logger?: ReturnType<typeof createLogger>;
   clock?: () => number;
 }
@@ -70,7 +71,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return reply.code(201).header('Location', `/api/tasks/${task.id}`).send(task);
   });
 
-  registerAuthorizationApi(app, tasks, options.port, clock);
+  registerAuthorizationApi(app, tasks, options.port, clock, options.codexWorktreeRoot);
 
   app.setErrorHandler((error, request, reply) => {
     const status = error instanceof Error && 'statusCode' in error ? error.statusCode : undefined;

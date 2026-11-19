@@ -5,9 +5,11 @@ import type { CreateTask, Task } from '@devhub/contracts';
 import { protectDatabaseFiles } from './database-permissions.js';
 import { createExecutionStore } from './execution-store.js';
 import { createCodexStore } from './codex-store.js';
+import { createGitStore } from './git-store.js';
 import { immediate, migrate } from './migrations.js';
 
 export { AuthorizationError, taskSpecDigest } from './execution-store.js';
+export { GitStateError } from './git-store.js';
 
 const taskColumns = 'id, title, description, target_platform AS targetPlatform, status, created_at AS createdAt, revision';
 
@@ -61,6 +63,7 @@ export function openTaskStore(filename: string, managedDataDirectory = false, cl
       },
       execution,
       codex: createCodexStore(database, clock),
+      git: createGitStore(database, clock),
     };
   } catch (error) {
     database.close();

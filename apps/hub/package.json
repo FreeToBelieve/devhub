@@ -18,6 +18,8 @@
     "@fastify/static": "^9.0.0",
     "fastify": "^5.12.8",
     "koffi": "3.3.8",
-    "zod": "^4.0.0"
+    "zod": "^4.0.0",
+    "@devhub/git-adapter": "workspace:*",
+    "@devhub/git-provider": "workspace:*"
   }
 }

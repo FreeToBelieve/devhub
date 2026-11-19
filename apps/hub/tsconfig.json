@@ -29,6 +29,12 @@
     },
     {
       "path": "../../packages/storage"
+    },
+    {
+      "path": "../../packages/git-provider"
+    },
+    {
+      "path": "../../packages/git-adapter"
     }
   ]
 }
