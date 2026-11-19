@@ -1,7 +1,7 @@
 import { apiErrorSchema, doctorReportSchema, taskListSchema, taskSchema } from '@devhub/contracts';
 import type { CreateTask } from '@devhub/contracts';
 
-async function request<T>(
+export async function request<T>(
   path: string,
   schema: { parse(data: unknown): T },
   options?: RequestInit,

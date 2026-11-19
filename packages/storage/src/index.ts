@@ -3,24 +3,19 @@ import { DatabaseSync } from 'node:sqlite';
 import { taskSchema } from '@devhub/contracts';
 import type { CreateTask, Task } from '@devhub/contracts';
 import { protectDatabaseFiles } from './database-permissions.js';
+import { createExecutionStore } from './execution-store.js';
+import { immediate, migrate } from './migrations.js';
 
-const taskColumns = 'id, title, description, target_platform AS targetPlatform, status, created_at AS createdAt';
+export { AuthorizationError, taskSpecDigest } from './execution-store.js';
 
-export function openTaskStore(filename: string, managedDataDirectory = false) {
+const taskColumns = 'id, title, description, target_platform AS targetPlatform, status, created_at AS createdAt, revision';
+
+export function openTaskStore(filename: string, managedDataDirectory = false, clock = Date.now) {
   if (filename !== ':memory:') protectDatabaseFiles(filename, managedDataDirectory);
 
   const database = new DatabaseSync(filename, { timeout: 1000 });
   try {
-    database.exec(`
-      CREATE TABLE IF NOT EXISTS tasks (
-        id TEXT PRIMARY KEY NOT NULL,
-        title TEXT NOT NULL,
-        description TEXT NOT NULL,
-        target_platform TEXT NOT NULL CHECK (target_platform IN ('WINDOWS', 'MACOS', 'BOTH')),
-        status TEXT NOT NULL,
-        created_at TEXT NOT NULL
-      ) STRICT;
-    `);
+    migrate(database);
 
     const insert = database.prepare(`
       INSERT INTO tasks (id, title, description, target_platform, status, created_at)
@@ -28,6 +23,13 @@ export function openTaskStore(filename: string, managedDataDirectory = false) {
     `);
     const selectOne = database.prepare(`SELECT ${taskColumns} FROM tasks WHERE id = ?`);
     const selectAll = database.prepare(`SELECT ${taskColumns} FROM tasks ORDER BY created_at DESC, rowid DESC`);
+    const update = database.prepare(`UPDATE tasks SET title = ?, description = ?, target_platform = ?,
+      revision = revision + 1 WHERE id = ? AND revision = ? RETURNING ${taskColumns}`);
+    function get(id: string): Task | undefined {
+      const row = selectOne.get(id);
+      return row === undefined ? undefined : taskSchema.parse(row);
+    }
+    const execution = createExecutionStore(database, get, clock);
 
     return {
       create(input: CreateTask): Task {
@@ -36,13 +38,19 @@ export function openTaskStore(filename: string, managedDataDirectory = false) {
           id: randomUUID(),
           status: 'CREATED',
           createdAt: new Date().toISOString(),
+          revision: 1,
         };
         insert.run(task.id, task.title, task.description, task.targetPlatform, task.status, task.createdAt);
         return task;
       },
-      get(id: string): Task | undefined {
-        const row = selectOne.get(id);
-        return row === undefined ? undefined : taskSchema.parse(row);
+      get,
+      revise(id: string, expectedRevision: number, input: CreateTask): Task | undefined {
+        return immediate(database, () => {
+          const row = update.get(input.title, input.description, input.targetPlatform, id, expectedRevision);
+          if (!row) return undefined;
+          execution.invalidateTaskInTransaction(id);
+          return taskSchema.parse(row);
+        });
       },
       list(): Task[] {
         return selectAll.all().map((row) => taskSchema.parse(row));
@@ -50,9 +58,12 @@ export function openTaskStore(filename: string, managedDataDirectory = false) {
       close() {
         database.close();
       },
+      execution,
     };
   } catch (error) {
     database.close();
     throw error;
   }
 }
+
+export type TaskStore = ReturnType<typeof openTaskStore>;

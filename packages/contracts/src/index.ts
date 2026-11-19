@@ -1,5 +1,7 @@
 import { z } from 'zod';
 
+export * from './authorization.js';
+
 export const targetPlatformSchema = z.enum(['WINDOWS', 'MACOS', 'BOTH']);
 export const taskStatusSchema = z.enum([
   'CREATED', 'QUEUED', 'RUNNING', 'TESTING', 'WAITING_APPROVAL', 'PUSHED',
@@ -17,7 +19,9 @@ export const taskSchema = createTaskSchema.extend({
   id: taskIdSchema,
   status: taskStatusSchema,
   createdAt: z.iso.datetime(),
+  revision: z.int().positive().default(1),
 });
+export const reviseTaskSchema = createTaskSchema.extend({ expectedRevision: z.int().positive() });
 export const taskListSchema = z.object({ tasks: z.array(taskSchema) });
 export const apiErrorSchema = z.object({ code: z.string(), message: z.string() });
 
