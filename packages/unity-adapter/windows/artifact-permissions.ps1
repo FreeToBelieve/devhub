@@ -5,8 +5,9 @@ $access = [System.Security.AccessControl.AccessControlSections]::Access
 $sections = $access -bor [System.Security.AccessControl.AccessControlSections]::Owner
 $directory = [IO.FileAttributes]::Directory
 $reparse = [IO.FileAttributes]::ReparsePoint
-$inherit = [System.Security.AccessControl.AceFlags]::ObjectInherit -bor [System.Security.AccessControl.AceFlags]::ContainerInherit
-$notEffective = [System.Security.AccessControl.AceFlags]::InheritOnly -bor [System.Security.AccessControl.AceFlags]::NoPropagateInherit
+# AceFlags is byte-backed. Windows PowerShell 5.1 needs integer operands for bitwise operations.
+$inherit = [int][System.Security.AccessControl.AceFlags]::ObjectInherit -bor [int][System.Security.AccessControl.AceFlags]::ContainerInherit
+$notEffective = [int][System.Security.AccessControl.AceFlags]::InheritOnly -bor [int][System.Security.AccessControl.AceFlags]::NoPropagateInherit
 $fullControl = [int][System.Security.AccessControl.FileSystemRights]::FullControl
 
 function Get-DirectoryAcl([string] $Path) {
@@ -27,8 +28,9 @@ function Assert-PrivateDirectory([string] $Path, [bool] $Child) {
         if ($rule -isnot [System.Security.AccessControl.CommonAce] -or $rule.IsCallback) { throw 'Unexpected ACE' }
         if ($rule.AceQualifier -ne [System.Security.AccessControl.AceQualifier]::AccessAllowed) { continue }
         if ($rule.SecurityIdentifier.Value -notin $trusted) { throw 'Unexpected Allow ACE' }
+        $flags = [int]$rule.AceFlags
         if ($rule.SecurityIdentifier.Value -eq $current -and ($rule.AccessMask -band $fullControl) -eq $fullControl -and
-            ($rule.AceFlags -band $inherit) -eq $inherit -and -not ($rule.AceFlags -band $notEffective) -and
+            ($flags -band $inherit) -eq $inherit -and -not ($flags -band $notEffective) -and
             (-not $Child -or $rule.IsInherited)) { $currentInherits = $true }
     }
     if (-not $currentInherits) { throw 'Missing inheritable current-user access' }
