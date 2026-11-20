@@ -1,5 +1,8 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { registerTaskInboxApi } from './task-inbox-api.js';
+import type { taskInboxRuntime } from './task-inbox.js';
+import { InboxRemoteError } from '@devhub/git-provider';
 import { registerMcpApi } from './mcp-api.js';
 import { mcpReads } from './mcp-reads.js';
 import {
@@ -7,7 +10,7 @@ import {
   createTaskSchema, legacyProjectId, requestKeySchema, reviseTaskSchema, taskIdSchema, versionInputSchema,
 } from '@devhub/contracts';
 import { allowsLocalOrigin, csrfForSession, sha256, verifyCsrf } from '@devhub/security';
-import { AuthorizationError, ProjectError, taskSpecDigest } from '@devhub/storage';
+import { AuthorizationError, InboxStateError, ProjectError, taskSpecDigest } from '@devhub/storage';
 import type { TaskStore } from '@devhub/storage';
 import type { Project } from '@devhub/contracts';
 import { workspaceMatches } from './authorization-context.js';
@@ -46,6 +49,9 @@ function input<T>(request: FastifyRequest, schema: z.ZodType<T>): T {
 }
 
 function errorResponse(reply: FastifyReply, error: unknown) {
+  if (error instanceof InboxStateError || error instanceof InboxRemoteError) {
+    return reply.code(error.code === 'INBOX_SESSION_NOT_FOUND' ? 404 : 409).send({ code: error.code, message: error.code });
+  }
   if (error instanceof ApiInputError) return reply.code(error.status).send({ code: error.code, message: error.code });
   if (error instanceof AuthorizationError) {
     const status = error.code === 'UNAUTHENTICATED' ? 401 : error.code === 'FORBIDDEN' ? 403 :
@@ -79,7 +85,7 @@ export interface AuthorizationRoutes {
 }
 
 export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore, port: number, clock: () => number,
-  git: ReturnType<typeof gitDelivery>, unity: ReturnType<typeof unityRuntime>, codexWorktreeRoot?: string, mcpTimeout?: number) {
+  git: ReturnType<typeof gitDelivery>, unity: ReturnType<typeof unityRuntime>, codexWorktreeRoot?: string, mcpTimeout?: number, inbox?: ReturnType<typeof taskInboxRuntime>) {
   const execution = tasks.execution;
   const route = (method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, handler: (
     request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply,
@@ -229,9 +235,11 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     const pending = execution.getRequest(requestId);
     if (pending?.projectId !== project(request).id) throw new AuthorizationError('NOT_FOUND');
     const matches = decision === 'approve' && pending ? await workspaceMatches(execution, pending.binding) : false;
-    return execution.mutate({
+    const decided = execution.mutate({
       kind: decision, requestId, expectedVersion, sessionDigest: actor.digest, idempotencyKey, workspaceMatches: matches,
     });
+    if (decision === 'approve') inbox?.launch(decided);
+    return decided;
   });
   route('POST', '/api/execution-requests/:id/revoke', (request) => {
     const actor = session(request, true);
@@ -262,6 +270,7 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     return reply.code(204).send();
   });
   const routes = { route, session, parse, input, key, project };
+  if (inbox) registerTaskInboxApi(routes, inbox, tasks);
   registerMcpApi(app, routes, tasks, mcpReads(tasks, git, unity), clock, mcpTimeout);
   registerProjectApi(routes, tasks, codexWorktreeRoot);
   registerGitApi(routes, tasks, git, codexWorktreeRoot);

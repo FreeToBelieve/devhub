@@ -161,11 +161,13 @@ export interface GitApiResponse {
   data: unknown;
 }
 
-export type GitApiTransport = (url: URL, method: string, headers: Record<string, string>, body?: string) => Promise<GitApiResponse>;
+export type GitApiTransport = (url: URL, method: string, headers: Record<string, string>, body?: string,
+  signal?: AbortSignal) => Promise<GitApiResponse>;
 
-export const gitApiTransport: GitApiTransport = async (url, method, headers, body) => {
+export const gitApiTransport: GitApiTransport = async (url, method, headers, body, signal) => {
   try {
-    const response = await openGitHttps(url, method, headers, body);
+    const timeout = AbortSignal.timeout(25_000);
+    const response = await openGitHttps(url, method, headers, body, signal ? AbortSignal.any([signal, timeout]) : timeout);
     const status = response.statusCode ?? 502;
     if (status >= 400) {
       response.destroy();

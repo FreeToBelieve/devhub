@@ -64,6 +64,18 @@ Hub 仅监听 `127.0.0.1`，请求使用同一地址和端口。应用可由同�
 
 从页面顶部切换项目。任务、授权、Codex、Unity、Git 和规范随选择切换，已有后台运行继续完成。项目设置可登记工程内 Markdown 规范、修改配置或归档。项目路径和版本修改后，旧的执行审批须重新申请。历史记录归入可确认的 Git 项目或 Legacy / Unassigned，歧义见项目页迁移报告。[技术设计](project_work/requirement_docs/sprint-2-multi-project.md) · [验收报告](project_work/test_case/sprint-2-multi-project.md)
 
+## GitHub 任务收件箱
+
+1. 登记 Unity 项目和本机 Runner，配置专用的 `DEVHUB_CODEX_HOME`，登录 Dashboard。
+2. 为私有仓库 `FreeToBelieve/devhub-task-inbox` 创建专用 fine-grained PAT。仓库权限选择 **Contents: Read-only** 和 **Pull requests: Read-only**。在「GitHub 任务收件箱」保存到系统凭据库。
+3. 在收件箱连接本机 Codex Host，再启用监听。监听器会补扫已有开放 PR，并每 30 秒更新。接受指定作者提交的同仓 `ai-task/<key>` → `main` PR，标题以 `[DEVHUB-TASK]` 开头，任务文件位于 `.devhub/tasks/<key>.md`。
+4. 打开 Session 和消息，核对项目、任务内容和 Head SHA，再点击「准备执行申请」。在「授权中心」选中同一项目并批准。已批准但因 Host 断开未启动的申请，可在其有效期内手动启动。已过期或内容有变化时，重新准备并批准。
+5. 在 Session 中查看独立 Worktree、Thread 和执行事件。同一 PR 更新后会进入原 Session，运行中的 Turn 结束后才可批准下一轮。Unity 验证、候选提交、Push 和 PR/MR 仍有各自的审批。
+
+Inbox 凭据单独存于 macOS Keychain 或 Windows Credential Manager。Windows 2025 Server CI 覆盖代码和原生 API 回归。Windows 11 登录及端到端执行仍需桌面实测。
+
+[技术设计](project_work/requirement_docs/sprint-2-github-codex-session.md) · [测试报告](project_work/test_case/sprint-2-github-codex-session.md)
+
 ## 本机 API
 
 | 方法与路径 | 返回 |

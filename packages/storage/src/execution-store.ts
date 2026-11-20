@@ -122,6 +122,7 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
       (project.repositoryRoot ? binding.projectContextSha256 === projectContextDigest(project) && project.repoId === binding.repoId :
         !sql('SELECT 1 FROM projects WHERE repo_id=?').get(binding.repoId)) &&
       task?.projectId === projectId && worktree?.projectId === projectId &&
+      !sql('SELECT 1 FROM codex_task_sessions WHERE worktree_id=? AND task_id<>?').get(binding.worktreeId, binding.taskId) &&
       task !== undefined && task.revision === binding.taskRevision && taskSpecDigest(task) === binding.taskSpecSha256 &&
       (task.targetPlatform === 'BOTH' || task.targetPlatform === binding.platform) &&
       runner?.platform === binding.platform && worktree?.repoId === binding.repoId;
@@ -292,7 +293,7 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
         if (request.status !== 'EXPIRED') invalidate(request, 'REVOKED', now, 'TASK_REVISION_CHANGED');
       }
     },
-    createRequest(input: ExecutionBinding, sessionDigest: string, idempotencyKey: string, workspaceMatches: boolean) {
+    createRequest(input: ExecutionBinding, sessionDigest: string, idempotencyKey: string, workspaceMatches: boolean, onCreate?: (request: ExecutionRequest) => void) {
       const binding = executionBindingSchema.parse(input);
       const digest = sha256(JSON.stringify(binding));
       return immediate(database, () => {
@@ -315,6 +316,7 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
         const request = getRequest(id)!;
         audit(request, 'PENDING', actor, now);
         rememberKey(actor, 'create', idempotencyKey, digest, id);
+        onCreate?.(request);
         return request;
       });
     },

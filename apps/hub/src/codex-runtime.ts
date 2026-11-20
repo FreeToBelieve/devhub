@@ -15,6 +15,7 @@ export async function executeApprovedTurn(
   profile: string,
   signal: AbortSignal,
   stream?: typeof streamCodexTurn,
+  hostOwner?: string,
 ): Promise<CodexRun> {
   const approval = store.execution.getByGrant(claim.grantId);
   const binding = approval?.binding;
@@ -39,7 +40,7 @@ export async function executeApprovedTurn(
   try {
     await claimFromLocalRunner(store.execution, binding.runnerId, claim, undefined, (request) => {
       signal.throwIfAborted();
-      reservedId = store.codex.reserveWithinClaim(request, workerId).devhubRunId;
+      reservedId = store.codex.reserveWithinClaim(request, workerId, hostOwner).devhubRunId;
     });
   } catch (error) {
     if (reservedId && store.codex.get(reservedId)) {

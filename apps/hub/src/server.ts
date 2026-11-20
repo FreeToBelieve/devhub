@@ -7,6 +7,8 @@ import { allowsLocalRequest } from '@devhub/security';
 import { openTaskStore } from '@devhub/storage';
 import { initializeUnityArtifactRoot } from '@devhub/unity-adapter';
 import { registerAuthorizationApi } from './authorization-api.js';
+import { taskInboxRuntime } from './task-inbox.js';
+import type { InboxDependencies } from './task-inbox.js';
 import { gitDelivery } from './git-delivery.js';
 import { unityRuntime } from './unity-runtime.js';
 import { dirname, resolve } from 'node:path';
@@ -17,6 +19,8 @@ interface ServerOptions {
   managedDataDirectory?: boolean;
   dashboardDirectory?: string;
   codexWorktreeRoot?: string;
+  codexHome?: string;
+  inboxDependencies?: InboxDependencies;
   unityArtifactRoot?: string;
   managedUnityArtifactDirectory?: boolean;
   logger?: ReturnType<typeof createLogger>;
@@ -36,6 +40,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
   const clock = options.clock ?? Date.now;
   const tasks = openTaskStore(options.databasePath, options.managedDataDirectory, clock);
   const git = gitDelivery(tasks, options.gitDependencies);
+  const inbox = taskInboxRuntime(tasks, options.databasePath, options.codexHome, options.codexWorktreeRoot, options.inboxDependencies);
   const unity = unityRuntime(tasks, options.unityArtifactRoot ?? resolve(dirname(options.databasePath), 'unity-runs'));
   let cleanupTimer: ReturnType<typeof setInterval> | undefined;
   let cleanup: Promise<void> | undefined;
@@ -58,6 +63,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
       await initializeUnityArtifactRoot(unity.artifacts, options.managedUnityArtifactDirectory === true);
     }
     await Promise.all([runCleanup(), runUnityCleanup()]);
+    inbox.start();
     cleanupTimer = setInterval(() => void runCleanup(), 1000);
     cleanupTimer.unref();
     unityCleanupTimer = setInterval(() => void runUnityCleanup(), 60 * 60 * 1000);
@@ -67,7 +73,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
     clearInterval(cleanupTimer);
     clearInterval(unityCleanupTimer);
     await Promise.all([cleanup, unityCleanup]);
-    await unity.close();
+    await Promise.all([unity.close(), inbox.close()]);
     tasks.close();
   });
 
@@ -83,7 +89,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.get('/api/doctor', async () => inspectEnvironment());
-  registerAuthorizationApi(app, tasks, options.port, clock, git, unity, options.codexWorktreeRoot, options.mcpTimeout);
+  registerAuthorizationApi(app, tasks, options.port, clock, git, unity, options.codexWorktreeRoot, options.mcpTimeout, inbox);
 
   app.setErrorHandler((error, request, reply) => {
     const status = error instanceof Error && 'statusCode' in error ? error.statusCode : undefined;
