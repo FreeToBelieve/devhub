@@ -6,6 +6,7 @@ import { sha256 } from '@devhub/security';
 import type { TaskStore } from '@devhub/storage';
 import { claimFromLocalRunner } from './runner-ipc.js';
 import { superviseCodex } from './supervise-codex.js';
+import { projectPath, projectWorkspace } from './project-context.js';
 
 export async function executeApprovedTurn(
   store: TaskStore,
@@ -24,9 +25,13 @@ export async function executeApprovedTurn(
   if (!prompt.trim() || sha256(prompt) !== binding.scope.promptSha256) {
     throw new Error('The prompt does not match the approved SHA256.');
   }
-  const worktree = store.execution.getWorktree(binding.worktreeId);
+  const project = store.projects.require(approval.projectId, true);
+  const worktree = store.execution.getWorktree(binding.worktreeId, project.id);
   if (!worktree) throw new Error('The approved worktree was not found.');
   const home = await isolatedCodexHome(profile, worktree.root);
+  const workspace = await projectWorkspace(project, worktree.root);
+  const projectDocuments = project.repositoryRoot ? project.settings.documents.map(({ path }) => path) : undefined;
+  for (const path of projectDocuments ?? []) await projectPath(workspace, path, 'file');
   signal.throwIfAborted();
 
   const workerId = randomUUID();
@@ -69,8 +74,8 @@ export async function executeApprovedTurn(
     },
   };
   const timer = setInterval(poll, 250);
-  const input = { worktree: worktree.root, profile: home, prompt, threadId: binding.codexThreadId,
-    networkMode: binding.scope.networkMode };
+  const input = { worktree: workspace, profile: home, prompt, threadId: binding.codexThreadId,
+    networkMode: binding.scope.networkMode, ...(projectDocuments ? { projectDocuments } : {}) };
   let exitConfirmed = true;
   let diagnostic: CodexDiagnostic | null = null;
   try {

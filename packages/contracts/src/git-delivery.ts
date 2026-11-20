@@ -117,6 +117,7 @@ export interface GitCandidatePreview {
 
 export interface GitDeliveryBinding extends GitDeliveryInput {
   projectId: string;
+  projectContextSha256?: string;
   connectionVersion: number;
   targetBranch: string;
   worktreeRoot: string;

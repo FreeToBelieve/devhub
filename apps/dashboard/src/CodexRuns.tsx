@@ -2,7 +2,7 @@ import { useEffect, useState } from 'react';
 import { z } from 'zod';
 import { codexEventSchema, codexRunSchema, operatorSessionSchema } from '@devhub/contracts';
 import type { CodexRun } from '@devhub/contracts';
-import { request } from './api.js';
+import { scopedRequest } from './api.js';
 
 const listSchema = z.object({ runs: z.array(codexRunSchema) });
 const eventsSchema = z.object({
@@ -11,7 +11,8 @@ const eventsSchema = z.object({
 });
 type Events = z.infer<typeof eventsSchema>['events'];
 
-export function CodexRuns() {
+export function CodexRuns({ projectId }: { projectId: string }) {
+  const request = scopedRequest(projectId);
   const [runs, setRuns] = useState<CodexRun[]>([]);
   const [selected, setSelected] = useState('');
   const [events, setEvents] = useState<Events>([]);

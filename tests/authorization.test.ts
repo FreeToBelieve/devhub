@@ -10,6 +10,7 @@ import { createServer } from '@devhub/hub';
 import { createLogger } from '@devhub/logger';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 import type { ExecutionBinding, ExecutionRequest } from '../packages/contracts/dist/index.js';
+import { legacyProjectId } from '../packages/contracts/dist/index.js';
 import { sha256 } from '../packages/security/dist/index.js';
 import { openTaskStore, taskSpecDigest } from '../packages/storage/dist/index.js';
 import { localDevice } from '../apps/hub/dist/authorization-context.js';
@@ -53,8 +54,8 @@ async function fixture() {
   const device = actualPlatform ? localDevice() : { platform: 'MACOS' as const, deviceId: sha256('test-device') };
   const runner = store.execution.registerRunner({ ...device, label: 'Native IPC test' });
   const tree = await inspectWorktree(repository);
-  store.execution.registerWorktree(tree);
-  const task = store.create(taskInput);
+  store.execution.registerWorktree(tree, legacyProjectId);
+  const task = store.create(taskInput, legacyProjectId);
   const logs: string[] = [];
   const makeServer = () => createServer({ port, databasePath, managedDataDirectory: true, clock,
     logger: createLogger('info', { write: (message) => logs.push(message) }) });
@@ -358,7 +359,7 @@ it('migrates a Sprint 2.1 database without rewriting the stored task', () => {
   const store = openTaskStore(filename, true);
   try {
     expect(store.get(id)).toEqual({
-      id, title: '原任务', description: '原说明', targetPlatform: 'BOTH', status: 'CREATED', createdAt, revision: 1,
+      id, title: '原任务', description: '原说明', targetPlatform: 'BOTH', status: 'CREATED', createdAt, revision: 1, projectId: legacyProjectId,
     });
     expect(store.execution.requests()).toEqual([]);
   } finally {

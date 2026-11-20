@@ -1,6 +1,7 @@
 import { z } from 'zod';
+import { unityEditorVersionSchema } from './project.js';
 
-export const unityVersion = '6000.3.28f1';
+export const legacyUnityEditorVersion = '6000.3.28f1';
 export const unityStageSchema = z.enum(['EDITOR', 'IMPORT', 'EDITMODE', 'PLAYMODE', 'BUILD', 'PLAYER', 'GAME_VIEW', 'PIPELINE']);
 const reservedWindowsName = /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/iu;
 
@@ -54,15 +55,17 @@ export const unityArtifactSchema = z.object({
   size: z.number().int().nonnegative(), sha256: z.string().regex(/^[a-f0-9]{64}$/), createdAt: z.int(),
 });
 export const unityRunSchema = z.object({
+  projectId: z.uuid(),
   id: z.uuid(), requestId: z.uuid(), taskId: z.uuid(), runnerId: z.uuid(), worktreeId: z.string(),
-  baseHeadSha: z.string(), platform: z.enum(['WINDOWS', 'MACOS']), version: z.literal(unityVersion),
+  baseHeadSha: z.string(), platform: z.enum(['WINDOWS', 'MACOS']), version: unityEditorVersionSchema,
   plan: unityPlanSchema, status: unityRunStatusSchema, phase: unityStageSchema.nullable(),
   pid: z.int().positive().nullable(), processIdentity: z.string().nullable(), cancelRequested: z.boolean(),
   startedAt: z.int(), finishedAt: z.int().nullable(), exitConfirmed: z.boolean(),
   diagnostic: z.string().nullable(), reports: z.array(unityReportSchema), artifacts: z.array(unityArtifactSchema),
 });
 export const unityEnvironmentSchema = z.object({
-  version: z.literal(unityVersion),
+  version: unityEditorVersionSchema.nullable(),
+  installedVersions: z.array(unityEditorVersionSchema),
   platform: z.enum(['WINDOWS', 'MACOS']).nullable(),
   editor: z.string().nullable(),
   hub: z.boolean(),

@@ -1,3 +1,4 @@
+import { legacyProjectId } from '../packages/contracts/dist/index.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { chmodSync, mkdirSync, mkdtempDisposableSync, readFileSync, realpathSync, writeFileSync } from 'node:fs';
@@ -179,11 +180,11 @@ it.skipIf(process.platform !== 'darwin' && process.platform !== 'win32')(
     const app = createServer({ port: 4317, databasePath: database, managedDataDirectory: true });
     const thread = 'thread_fixture';
     try {
-      store.execution.registerWorktree(tree);
+      store.execution.registerWorktree(tree, legacyProjectId);
       store.codex.manage(tree.worktreeId);
       const device = localDevice();
       const runner = store.execution.registerRunner({ ...device, label: 'Runtime fixture' });
-      const task = store.create({ title: 'Codex fixture', description: 'Synthetic task', targetPlatform: 'BOTH' });
+      const task = store.create({ title: 'Codex fixture', description: 'Synthetic task', targetPlatform: 'BOTH' }, legacyProjectId);
       const bootstrap = store.execution.createBootstrap();
       const session = store.execution.exchangeBootstrap(sha256(bootstrap.proof));
       const sessionDigest = sha256(session.proof);

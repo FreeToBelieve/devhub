@@ -4,6 +4,8 @@ import type { GitChange, GitConnection, GitDeliveryApproval, GitDeliveryBinding,
 import { gitCandidateStaleCodes } from '@devhub/contracts';
 import { immediate } from './migrations.js';
 import { worktreeBusy } from './worktree-lock.js';
+import { projectContextDigest } from './project-store.js';
+import type { ProjectStore } from './project-store.js';
 
 export class GitStateError extends Error {
   constructor(readonly code: string) { super(code); }
@@ -25,10 +27,20 @@ function decode(row: Record<string, unknown> | undefined) {
   return row && { ...row, binding: JSON.parse(String(row.binding)), summary: JSON.parse(String(row.summary)) } as GitOperation | undefined;
 }
 
-export function createGitStore(database: DatabaseSync, clock: () => number) {
+export function createGitStore(database: DatabaseSync, clock: () => number, projects: ProjectStore) {
   const sql = (query: string) => database.prepare(query);
   const connection = (projectId: string) => sql(connections + ' WHERE c.project_id=?').get(projectId) as SecureConnection | undefined;
   const operation = (id: string) => decode(sql('SELECT ' + operationColumns + ' FROM git_operations WHERE id=?').get(id));
+  function assertScope(binding: GitDeliveryBinding) {
+    const project = projects.require(binding.projectId, true);
+    const task = sql('SELECT project_id FROM tasks WHERE id=?').get(binding.taskId);
+    const tree = sql('SELECT project_id,repo_id,root FROM authorization_worktrees WHERE worktree_id=?').get(binding.worktreeId);
+    if (task?.project_id !== project.id || tree?.project_id !== project.id || tree.repo_id !== binding.repoId ||
+        tree.root !== binding.worktreeRoot || (project.repositoryRoot &&
+          (project.repoId !== binding.repoId || projectContextDigest(project) !== binding.projectContextSha256))) {
+      throw new GitStateError('GIT_PROJECT_SCOPE_MISMATCH');
+    }
+  }
   function audit(projectId: string, operationId: string | null, actor: string, kind: string, reason: string | null = null) {
     sql('INSERT INTO git_audit_events(project_id,operation_id,actor_digest,kind,reason,created_at) VALUES (?,?,?,?,?,?)')
       .run(projectId, operationId, actor, kind, reason, clock());
@@ -36,6 +48,7 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
   function approved(id: string, input: GitDeliveryApproval) {
     const draft = operation(id);
     if (!draft) throw new GitStateError('GIT_OPERATION_NOT_FOUND');
+    if (draft.projectId !== draft.binding.projectId) throw new GitStateError('GIT_PROJECT_SCOPE_MISMATCH');
     if (draft.version !== input.expectedVersion || draft.digest !== input.digest) throw new GitStateError('GIT_APPROVAL_STALE');
     return draft;
   }
@@ -53,6 +66,7 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
     },
     reserveCredential(projectId: string, reference: string) {
       immediate(database, () => {
+        projects.require(projectId, true);
         sql('INSERT INTO git_credentials_refs(id, project_id, created_at) VALUES (?,?,?)').run(reference, projectId, clock());
         queueCleanup(reference, clock() + 5 * 60_000);
       });
@@ -60,6 +74,7 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
     queueCleanup,
     connect(input: Omit<SecureConnection, 'version'> & { credentialRef: string }, expectedVersion: number, actor: string) {
       return immediate(database, () => {
+        projects.require(input.projectId, true);
         const previous = connection(input.projectId);
         if ((previous?.version ?? 0) !== expectedVersion) throw new GitStateError('GIT_CONNECTION_CHANGED');
         if (previous && (previous.repositoryUrl !== input.repositoryUrl || previous.remoteId !== input.remoteId ||
@@ -135,6 +150,7 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
     },
     preview(binding: GitDeliveryBinding, summary: GitOperation['summary'], digest: string, actor: string, requestedId: string) {
       return immediate(database, () => {
+        assertScope(binding);
         const previous = operation(requestedId);
         if (previous) {
           if (previous.digest !== digest || previous.projectId !== binding.projectId) throw new GitStateError('GIT_APPROVAL_STALE');
@@ -150,6 +166,7 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
     approve(id: string, input: GitDeliveryApproval, actor: string) {
       return immediate(database, () => {
         const draft = approved(id, input);
+        assertScope(draft.binding);
         if (!draft.binding.candidateTreeSha || !draft.summary.candidate?.canCommit ||
             draft.errorCode && gitCandidateStaleCodes.includes(draft.errorCode)) {
           throw new GitStateError('GIT_CANDIDATE_REVIEW_REQUIRED');
@@ -168,6 +185,7 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
       return immediate(database, () => {
         const draft = approved(id, input);
         if (draft.phase === 'DELIVERED') return draft;
+        assertScope(draft.binding);
         if (worktreeBusy(database, draft.binding.worktreeId)) {
           throw new GitStateError('GIT_WORKTREE_BUSY');
         }
@@ -219,6 +237,7 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
     },
     claimMutation(projectId: string, number: number, key: string, digest: string) {
       return immediate(database, () => {
+        projects.require(projectId, true);
         const now = clock();
         sql(`UPDATE git_change_mutations SET claimed_at=NULL WHERE project_id=? AND number=? AND claimed_at<=?`)
           .run(projectId, number, now - 20 * 60_000);

@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { realpath } from 'node:fs/promises';
+import { join } from 'node:path';
 import type { GitChange, GitDeliveryBinding, GitDeliveryInput, GitOperation, GitProjectInput } from '@devhub/contracts';
 import {
   applyDeliveryCommit, checkLocalGitRemote, createDeliveryCommit, gitCredentials, gitTransport,
@@ -7,9 +9,10 @@ import {
 import type { GitCredentialManager } from '@devhub/git-adapter';
 import { gitProvider, GitProviderError, providerEndpoint } from '@devhub/git-provider';
 import { containsWorkspaceSecret, sha256 } from '@devhub/security';
-import { GitStateError, taskSpecDigest } from '@devhub/storage';
+import { GitStateError, projectContextDigest, taskSpecDigest } from '@devhub/storage';
 import type { TaskStore } from '@devhub/storage';
 import { createCodexWorktree, inspectCodexWorktree } from './codex-worktree.js';
+import { projectWorkspace } from './project-context.js';
 
 interface Dependencies {
   credentials: () => Promise<GitCredentialManager>;
@@ -68,15 +71,16 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
     if (store.connection(projectId)?.version !== version) fail('GIT_CONNECTION_CHANGED');
   }
 
-  async function inspect(binding: Pick<GitDeliveryInput, 'worktreeId' | 'taskId' | 'branch'>, token: string) {
-    const worktree = tasks.execution.getWorktree(binding.worktreeId);
-    const task = tasks.get(binding.taskId);
+  async function inspect(projectId: string, binding: Pick<GitDeliveryInput, 'worktreeId' | 'taskId' | 'branch'>, token: string) {
+    const project = tasks.projects.require(projectId, true);
+    const worktree = tasks.execution.getWorktree(binding.worktreeId, projectId);
+    const task = tasks.get(binding.taskId, projectId);
     if (!worktree || !tasks.codex.manages(worktree.worktreeId) || !task) throw new GitStateError('GIT_WORKTREE_REQUIRED');
-    const live = await inspectCodexWorktree(worktree.root, 'OFF', true, token);
+    const live = await inspectCodexWorktree(worktree.root, 'OFF', true, token, project);
     const git = await localGitIdentity(live.root);
     if (live.repoId !== worktree.repoId || live.worktreeId !== worktree.worktreeId || live.baseHeadSha !== git.head ||
         (git.ref && git.ref !== 'refs/heads/' + binding.branch)) fail('GIT_WORKTREE_CHANGED');
-    return { ...live, ...git, task };
+    return { ...live, ...git, task, project };
   }
 
   function checkText(text: string, token: string) {
@@ -84,7 +88,9 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
   }
 
   async function connect(input: GitProjectInput, expectedVersion: number, actor: string) {
+    const project = tasks.projects.require(input.projectId, true);
     const endpoint = providerEndpoint(input.provider, input.repositoryUrl, input.apiBaseUrl);
+    if (project.repositoryRoot) await checkLocalGitRemote(project.repositoryRoot, endpoint);
     const remote = await dependencies.provider(endpoint, input.token).validateConnection();
     if (!remote.canPush) fail('GIT_PERMISSION_DENIED');
     const vault = await dependencies.credentials();
@@ -105,6 +111,8 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
   }
 
   async function prepare(projectId: string, repositoryRoot: string, targetDirectory: string, branch: string, actor: string) {
+    const project = tasks.projects.require(projectId, true, true);
+    if (await realpath(repositoryRoot) !== project.repositoryRoot) fail('GIT_PROJECT_SCOPE_MISMATCH');
     const context = await credential(projectId);
     const base = await context.provider.getBranch(context.connection.defaultBranch);
     if (!base || branch === base.name || await context.provider.getBranch(branch)) fail('GIT_BRANCH_PROTECTED');
@@ -112,20 +120,22 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
     const current = await localGitIdentity(repositoryRoot);
     if (current.head !== base?.sha) fail('GIT_HEAD_CHANGED');
     checkConnection(projectId, context.connection.version);
-    const worktree = await createCodexWorktree(repositoryRoot, targetDirectory);
+    const worktree = await createCodexWorktree(repositoryRoot, join(targetDirectory, projectId), project);
+    await projectWorkspace(project, worktree.root);
     if (worktree.baseHeadSha !== current.head) fail('GIT_HEAD_CHANGED');
     await prepareDeliveryBranch(worktree.root, branch, current.head);
-    tasks.execution.registerWorktree(worktree);
+    const registered = tasks.execution.registerWorktree(worktree, projectId);
     tasks.codex.manage(worktree.worktreeId);
     store.audit(projectId, null, actor, 'WORKTREE_CREATED');
-    return worktree;
+    return registered;
   }
 
   async function preview(projectId: string, input: GitDeliveryInput, actor: string, operationId: string) {
+    if (!tasks.get(input.taskId, projectId) || !tasks.execution.getWorktree(input.worktreeId, projectId)) fail('GIT_PROJECT_SCOPE_MISMATCH');
     if (store.busy(input.worktreeId)) fail('GIT_WORKTREE_BUSY');
     const context = await credential(projectId);
     checkText([input.title, input.description, input.author.name, input.author.email].join('\n'), context.token);
-    const worktree = await inspect(input, context.token);
+    const worktree = await inspect(projectId, input, context.token);
     await checkLocalGitRemote(worktree.root, context.endpoint);
     if (!context.repository.canPush || input.branch === context.connection.defaultBranch) fail('GIT_BRANCH_PROTECTED');
     const target = await context.provider.getBranch(input.branch);
@@ -136,8 +146,13 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
     if (existing && existing.state !== 'open') fail('GIT_CHANGE_CLOSED');
     const candidate = { ...await inspectCandidate(worktree.root, worktree.head, context.token),
       workspaceSha256: worktree.workspaceSha256 };
+    const subdirectory = worktree.project.unityProjectPath;
+    if (subdirectory && subdirectory !== '.' && candidate.changedFiles.some(({ path, previousPath }) =>
+      !path.startsWith(subdirectory + '/') || (previousPath && !previousPath.startsWith(subdirectory + '/')))) {
+      fail('GIT_PROJECT_SCOPE_MISMATCH');
+    }
     const summary = { changes: candidate.changedFiles.map(({ path }) => path), diff: '', candidate };
-    const live = await inspect(input, context.token);
+    const live = await inspect(projectId, input, context.token);
     if (live.head !== worktree.head || live.workspaceSha256 !== worktree.workspaceSha256 ||
         live.task.revision !== worktree.task.revision) fail('GIT_WORKTREE_CHANGED');
     checkConnection(projectId, context.connection.version);
@@ -146,6 +161,7 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
       worktreeRoot: worktree.root, repoId: worktree.repoId, head: worktree.head, workspaceSha256: worktree.workspaceSha256,
       taskRevision: worktree.task.revision, taskSpecSha256: taskSpecDigest(worktree.task), remoteHead: target?.sha ?? null,
       candidateTreeSha: candidate.candidateTreeSha, candidateDiffDigest: candidate.candidateDiffDigest,
+      ...(worktree.project.repositoryRoot ? { projectContextSha256: projectContextDigest(worktree.project) } : {}),
     };
     return { operation: store.preview(binding, summary, sha256(JSON.stringify({ binding, summary })), actor, operationId), ...summary };
   }
@@ -161,7 +177,7 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
         binding.targetBranch !== context.connection.defaultBranch) fail('GIT_BRANCH_PROTECTED');
     async function verify(expected: readonly string[]) {
       checkConnection(projectId, binding.connectionVersion);
-      const live = await inspect(binding, context.token);
+      const live = await inspect(projectId, binding, context.token);
       if (live.root !== binding.worktreeRoot || live.repoId !== binding.repoId ||
           live.workspaceSha256 !== binding.workspaceSha256 || !expected.includes(live.head) ||
           live.task.revision !== binding.taskRevision || taskSpecDigest(live.task) !== binding.taskSpecSha256) {

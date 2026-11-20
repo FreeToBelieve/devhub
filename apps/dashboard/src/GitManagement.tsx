@@ -2,10 +2,10 @@ import { useEffect, useRef, useState } from 'react';
 import type { FormEvent, ReactNode } from 'react';
 import type {
   CodexRun, GitBranch, GitCandidateBlob, GitCandidatePreview, GitChange, GitCheck, GitConnection, GitDiffFile, GitOperation,
-  GitReview, RunnerRecord, Task, WorktreeRecord,
+  GitReview, Project, RunnerRecord, Task, WorktreeRecord,
 } from '@devhub/contracts';
 import { gitCandidateStaleCodes, operatorSessionSchema } from '@devhub/contracts';
-import { request } from './api.js';
+import { scopedRequest } from './api.js';
 
 interface Catalog {
   connections: GitConnection[];
@@ -22,7 +22,6 @@ interface Operations {
 }
 
 interface Details { change: GitChange; diff: GitDiffFile[]; reviews: GitReview[]; checks: GitCheck[] }
-const read = <T,>(path: string, options?: RequestInit) => request(path, { parse: (value) => value as T }, options);
 
 function Panel({ title, children }: { title: string; children: ReactNode }) {
   return <section className="panel">
@@ -80,10 +79,12 @@ function CandidatePreview({ candidate }: { candidate: GitCandidatePreview }) {
   </section>;
 }
 
-export function GitManagement() {
+export function GitManagement({ project }: { project: Project }) {
+  const selected = project.id;
+  const request = scopedRequest(selected);
+  const read = <T,>(path: string, options?: RequestInit) => request(path, { parse: (value) => value as T }, options);
   const [csrf, setCsrf] = useState('');
   const [catalog, setCatalog] = useState<Catalog>();
-  const [selected, setSelected] = useState('');
   const [operations, setOperations] = useState<Operations>();
   const [branches, setBranches] = useState<GitBranch[]>();
   const [details, setDetails] = useState<Details>();
@@ -105,7 +106,6 @@ export function GitManagement() {
         const data = await read<Catalog>('/api/git/connections', { signal: abort.signal });
         setCsrf(csrfToken);
         setCatalog(data);
-        setSelected(data.connections[0]?.projectId ?? '');
       } catch {
         if (!abort.signal.aborted) setError('请先在授权中心登录。');
       } finally {
@@ -158,17 +158,6 @@ export function GitManagement() {
     const result = await read<{ runs: CodexRun[] }>('/api/codex-runs');
     setRuns(result.runs);
   }
-  function select(projectId: string) {
-    setSelected(projectId);
-    setBranches(undefined);
-    setOperations(undefined);
-    setDetails(undefined);
-    commentIntent.current = undefined;
-    setRenew(false);
-    setError('');
-    setStatus('');
-  }
-
   if (!ready) return <p className="panel empty" role="status">正在读取 Git 管理…</p>;
   if (!csrf || !catalog) return <p className="panel empty"><a href="#authorization">{error}</a></p>;
 
@@ -179,10 +168,6 @@ export function GitManagement() {
     {status && <p className="notice" role="status">{status}</p>}
     {error && <p className="alert inset" role="alert">{error}</p>}
     <Panel title="仓库连接">
-      <label>项目<select value={selected} disabled={busy} onChange={(event) => select(event.target.value)}>
-        <option value="">新增项目</option>
-        {catalog.connections.map((item) => <option key={item.projectId} value={item.projectId}>{item.repositoryUrl}</option>)}
-      </select></label>
       {connection && <p>{connection.account} · 默认分支 {connection.defaultBranch} · {connection.connected ? '凭据已登记' : '凭据已撤销'}</p>}
       {connection?.connected && <div className="actions">
         <button className="button" disabled={busy} onClick={() => setRenew(!renew)}>重新授权</button>
@@ -192,16 +177,16 @@ export function GitManagement() {
           await refreshCatalog();
         }, '连接状态已刷新。')}>撤销凭据</button>
       </div>}
-      {(!connection?.connected || renew) && <form className="form" key={connection?.projectId ?? 'new'} onSubmit={(event) => submit(event, async (data) => {
+      {project.repositoryRoot && project.status === 'ACTIVE' && (!connection?.connected || renew) && <form className="form" key={connection?.projectId ?? 'new'} onSubmit={(event) => submit(event, async (data) => {
         const apiBaseUrl = formValue(data, 'api');
-        const result = await write<GitConnection>('/api/git/connections', {
-          projectId: selected || crypto.randomUUID(), expectedVersion: connection?.version ?? 0,
+        await write<GitConnection>('/api/git/connections', {
+          projectId: selected, expectedVersion: connection?.version ?? 0,
           provider: connection?.provider ?? formValue(data, 'provider'),
           repositoryUrl: connection?.repositoryUrl ?? formValue(data, 'repository'),
           apiBaseUrl: connection?.apiBaseUrl || apiBaseUrl || undefined, token: formValue(data, 'token'),
         }, 'PUT');
         await refreshCatalog();
-        select(result.projectId);
+        setRenew(false);
       }, '仓库连接已验证。')}>
         {!connection && <>
           <label>Provider<select name="provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option></select></label>
@@ -224,7 +209,7 @@ export function GitManagement() {
           await write('/api/git/worktrees', { projectId: selected, repositoryRoot: formValue(data, 'root'), branch: formValue(data, 'branch') });
           await refreshCatalog();
         }, '开发分支与受管工作树已创建。')}>
-          <label>干净的本地仓库路径<input name="root" required /></label>
+          <label>已登记的本地仓库<input name="root" defaultValue={project.repositoryRoot ?? ''} readOnly required /></label>
           <label>开发分支<input name="branch" placeholder="devhub/feature-name" required /></label>
           <button className="button" disabled={busy}>创建开发分支和工作树</button>
         </form>
@@ -243,8 +228,8 @@ export function GitManagement() {
           <label>受管工作树<select name="worktree" required><option value="">选择工作树</option>
             {catalog.worktrees.map((tree) => <option value={tree.worktreeId} key={tree.worktreeId}>{tree.root}</option>)}</select></label>
           <label>开发分支<input name="branch" placeholder="devhub/feature-name" required /></label>
-          <label>Git 作者<input name="author" required /></label>
-          <label>Git 作者邮箱<input name="email" type="email" required /></label>
+          <label>Git 作者<input name="author" defaultValue={project.settings.gitAuthor?.name ?? ''} required /></label>
+          <label>Git 作者邮箱<input name="email" type="email" defaultValue={project.settings.gitAuthor?.email ?? ''} required /></label>
           <label>Commit 和 PR/MR 标题<input name="title" required /></label>
           <label>PR/MR 说明<textarea name="description" /></label>
           <button className="button" disabled={busy}>检查变更并生成预览</button>

@@ -1,4 +1,5 @@
 import type { DatabaseSync } from 'node:sqlite';
+import { migrateProjects } from './project-migration.js';
 
 export function immediate<T>(database: DatabaseSync, operation: () => T): T {
   database.exec('BEGIN IMMEDIATE');
@@ -12,14 +13,13 @@ export function immediate<T>(database: DatabaseSync, operation: () => T): T {
   }
 }
 
-export function migrate(database: DatabaseSync) {
+export function migrate(database: DatabaseSync, target = 7) {
   immediate(database, () => {
     const previous = database.prepare('PRAGMA user_version').get()?.user_version;
-    if (previous === 6) return;
-    if (previous !== 0 && previous !== 1 && previous !== 2 && previous !== 3 && previous !== 4 && previous !== 5) {
+    if (typeof previous !== 'number' || previous < 0 || previous > target || target > 7) {
       throw new Error('Unsupported DevHub database version.');
     }
-    if (previous === 0) database.exec(`
+    if (previous < 1 && target >= 1) database.exec(`
       CREATE TABLE IF NOT EXISTS tasks (
         id TEXT PRIMARY KEY NOT NULL,
         title TEXT NOT NULL,
@@ -98,7 +98,7 @@ export function migrate(database: DatabaseSync) {
       ) STRICT;
       PRAGMA user_version = 1;
     `);
-    if (previous === 0 || previous === 1) database.exec(`
+    if (previous < 2 && target >= 2) database.exec(`
       CREATE TABLE codex_worktrees (
         worktree_id TEXT PRIMARY KEY NOT NULL REFERENCES authorization_worktrees(worktree_id)
       ) STRICT;
@@ -128,7 +128,7 @@ export function migrate(database: DatabaseSync) {
       CREATE INDEX codex_run_event_order ON codex_run_events(run_id, seq);
       PRAGMA user_version = 2;
     `);
-    if (previous !== 3 && previous !== 4 && previous !== 5) database.exec(`
+    if (previous < 3 && target >= 3) database.exec(`
       ALTER TABLE codex_runs ADD COLUMN worker_id TEXT;
       ALTER TABLE codex_runs ADD COLUMN heartbeat_at INTEGER;
       ALTER TABLE codex_runs ADD COLUMN exit_confirmed_at INTEGER;
@@ -137,7 +137,7 @@ export function migrate(database: DatabaseSync) {
         WHERE status='RUNNING';
       PRAGMA user_version = 3;
     `);
-    if (previous !== 4 && previous !== 5) database.exec(`
+    if (previous < 4 && target >= 4) database.exec(`
       CREATE TABLE git_providers (
         id TEXT PRIMARY KEY NOT NULL,
         kind TEXT NOT NULL CHECK (kind IN ('github','gitlab')),
@@ -223,7 +223,7 @@ export function migrate(database: DatabaseSync) {
       END;
       PRAGMA user_version = 4;
     `);
-    if (previous !== 5) database.exec(`
+    if (previous < 5 && target >= 5) database.exec(`
       CREATE TABLE git_credential_cleanup (
         credential_ref TEXT PRIMARY KEY NOT NULL REFERENCES git_credentials_refs(id),
         next_attempt_at INTEGER NOT NULL,
@@ -237,7 +237,7 @@ export function migrate(database: DatabaseSync) {
         WHERE NOT EXISTS (SELECT 1 FROM project_provider_connections c WHERE c.credential_ref=r.id);
       PRAGMA user_version = 5;
     `);
-    database.exec(`
+    if (previous < 6 && target >= 6) database.exec(`
       CREATE TABLE unity_runs (
         id TEXT PRIMARY KEY NOT NULL,
         request_id TEXT NOT NULL UNIQUE REFERENCES execution_requests(id),
@@ -266,5 +266,6 @@ export function migrate(database: DatabaseSync) {
       BEGIN SELECT RAISE(ABORT, 'UNITY_WORKTREE_BUSY'); END;
       PRAGMA user_version=6;
     `);
+    if (previous < 7 && target >= 7) migrateProjects(database);
   });
 }

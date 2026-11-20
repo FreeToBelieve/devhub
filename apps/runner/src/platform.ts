@@ -1,11 +1,9 @@
 import { accessSync, constants, readFileSync, readdirSync, statSync } from 'node:fs';
 import { posix, win32 } from 'node:path';
 import type { DoctorCheck, DoctorReport } from '@devhub/contracts';
+import { supportsUnityEditorVersion, unityEditorVersionSchema } from '@devhub/contracts';
 import { inspectUnityEnvironment } from '@devhub/unity-adapter';
 import { checkOperatingSystem, readOperatingSystem } from './operating-system.js';
-
-const requiredUnityVersion = '6000.3.28f1';
-const unityVersionPattern = /^\d+\.\d+\.\d+[abfp]\d+$/;
 
 interface FileProbes {
   isExecutable(filename: string): boolean;
@@ -52,7 +50,7 @@ function pathHasCommand(machine: Machine, command: string): boolean {
   });
 }
 
-function checkUnity(machine: Machine): DoctorCheck {
+function checkUnity(machine: Machine, requested: string | undefined): DoctorCheck {
   if (machine.platform !== 'win32' && machine.platform !== 'darwin') {
     return { id: 'unity', status: 'skipped', detail: 'Unity detection is available on Windows and macOS.' };
   }
@@ -75,53 +73,39 @@ function checkUnity(machine: Machine): DoctorCheck {
   const executable = windows ? ['Editor', 'Unity.exe'] : ['Unity.app', 'Contents', 'MacOS', 'Unity'];
   const hasEditor = (root: string, version: string) => files.isExecutable(paths.join(root, version, ...executable));
   const detected = new Set<string>();
-
   for (const root of roots) {
-    if (hasEditor(root, requiredUnityVersion)) {
-      return { id: 'unity', status: 'pass', detail: `Unity ${requiredUnityVersion} executable found.` };
+    if (requested && supportsUnityEditorVersion(requested) && hasEditor(root, requested)) {
+      return { id: 'unity', status: 'pass', detail: `Unity ${requested} executable found.` };
     }
     let folders: string[];
-    try {
-      folders = files.readDirectory(root);
-    } catch {
-      continue;
-    }
+    try { folders = files.readDirectory(root); }
+    catch { continue; }
     for (const folder of folders) {
-      if (unityVersionPattern.test(folder) && hasEditor(root, folder)) detected.add(folder);
+      if (supportsUnityEditorVersion(folder) && hasEditor(root, folder)) detected.add(folder);
     }
   }
   const alternatives = [...detected].sort();
-  return {
-    id: 'unity',
-    status: 'warning',
-    detail: alternatives.length
-      ? `Expected Unity ${requiredUnityVersion}; found ${alternatives.join(', ')}.`
-      : `Unity ${requiredUnityVersion} executable was not found in the configured or standard locations.`,
-  };
+  if (!requested && alternatives.length) return { id: 'unity', status: 'pass', detail: 'Installed Unity: ' + alternatives.join(', ') };
+  return { id: 'unity', status: 'warning', detail: requested
+    ? 'Requested Unity ' + requested + ' was not found. Installed: ' + (alternatives.join(', ') || 'none')
+    : 'No supported Unity executable was found in the configured or standard locations.' };
 }
 
-function checkUnityProject(machine: Machine): DoctorCheck {
+function checkUnityProject(machine: Machine): { check: DoctorCheck; version?: string } {
   const project = machine.env.DEVHUB_UNITY_PROJECT;
-  if (!project) {
-    return { id: 'unityProject', status: 'skipped', detail: 'DEVHUB_UNITY_PROJECT is unset.' };
-  }
-
+  if (!project) return { check: { id: 'unityProject', status: 'skipped', detail: 'DEVHUB_UNITY_PROJECT is unset.' } };
   const paths = machine.platform === 'win32' ? win32 : posix;
   try {
-    const versionFile = paths.resolve(machine.cwd, project, 'ProjectSettings', 'ProjectVersion.txt');
-    const content = machine.files.readText(versionFile);
-    const version = /^m_EditorVersion:[ \t]*(\S+)[ \t]*\r?$/m.exec(content)?.[1];
-    if (version && unityVersionPattern.test(version)) {
-      return {
-        id: 'unityProject',
-        status: version === requiredUnityVersion ? 'pass' : 'warning',
-        detail: `Project requests Unity ${version}; expected ${requiredUnityVersion}.`,
-      };
+    const content = machine.files.readText(paths.resolve(machine.cwd, project, 'ProjectSettings', 'ProjectVersion.txt'));
+    const version = unityEditorVersionSchema.safeParse(/^m_EditorVersion:[ \t]*(\S+)[ \t]*\r?$/m.exec(content)?.[1]);
+    if (version.success) {
+      return { version: version.data, check: { id: 'unityProject', status: supportsUnityEditorVersion(version.data) ? 'pass' : 'warning',
+        detail: 'Project requests Unity ' + version.data + '.' } };
     }
   } catch {
-    return { id: 'unityProject', status: 'warning', detail: 'ProjectSettings/ProjectVersion.txt cannot be read.' };
+    return { check: { id: 'unityProject', status: 'warning', detail: 'ProjectSettings/ProjectVersion.txt cannot be read.' } };
   }
-  return { id: 'unityProject', status: 'warning', detail: 'ProjectVersion.txt has no valid Editor version.' };
+  return { check: { id: 'unityProject', status: 'warning', detail: 'ProjectVersion.txt has no valid Editor version.' } };
 }
 
 export async function inspectEnvironment(overrides: Partial<Machine> = {}): Promise<DoctorReport> {
@@ -153,7 +137,13 @@ export async function inspectEnvironment(overrides: Partial<Machine> = {}): Prom
       detail: found ? `${command} is available on PATH.` : `${command} was not found on PATH.`,
     });
   }
-  checks.push(checkUnity(machine), checkUnityProject(machine));
+  const project = checkUnityProject(machine);
+  const editor = checkUnity(machine, project.version);
+  checks.push(editor, project.check);
   const unity = Object.keys(overrides).length === 0 ? await inspectUnityEnvironment(machine.env.DEVHUB_UNITY_PROJECT) : undefined;
+  if (unity && !unity.editor && editor.status === 'pass') {
+    editor.status = 'warning';
+    editor.detail = 'The installed Unity executable could not be verified for this project.';
+  }
   return { platform, arch, checks, ...(unity ? { unity } : {}) };
 }

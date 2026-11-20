@@ -17,19 +17,21 @@ export function localDevice(): Pick<RunnerRecord, 'deviceId' | 'platform'> {
 export async function workspaceMatches(execution: TaskStore['execution'], binding: ExecutionBinding, fresh = false): Promise<boolean> {
   const worktree = execution.getWorktree(binding.worktreeId);
   if (!worktree || worktree.repoId !== binding.repoId) return false;
+  const project = execution.getProject(worktree.projectId ?? '');
   try {
     if (binding.scope.operation === 'codex.turn') {
       if (!binding.scope.executionProfile || !binding.scope.networkMode) return false;
-      const live = await inspectCodexWorktree(worktree.root, binding.scope.networkMode, fresh);
+      const live = await inspectCodexWorktree(worktree.root, binding.scope.networkMode, fresh, undefined, project);
       return live.repoId === binding.repoId && live.worktreeId === binding.worktreeId && live.baseHeadSha === binding.baseHeadSha &&
         live.workspaceSha256 === binding.scope.workspaceSha256 && live.sdkConfigSha256 === binding.scope.sdkConfigSha256;
     }
     if (binding.scope.operation === 'unity.run') {
-      const live = await inspectCodexWorktree(worktree.root, 'OFF', fresh);
-      const configuration = await unityConfiguration(worktree.root, binding.scope.plan);
+      const live = await inspectCodexWorktree(worktree.root, 'OFF', fresh, undefined, project);
+      const configuration = await unityConfiguration(live.projectRoot, binding.scope.plan, project?.unityVersion);
       return configuration.environment.platform === binding.platform && live.repoId === binding.repoId &&
         live.worktreeId === binding.worktreeId && live.baseHeadSha === binding.baseHeadSha &&
-        live.workspaceSha256 === binding.scope.workspaceSha256 && configuration.configSha256 === binding.scope.configSha256;
+        live.workspaceSha256 === binding.scope.workspaceSha256 && configuration.configSha256 === binding.scope.configSha256 &&
+        (!binding.scope.editorVersion || configuration.editorVersion === binding.scope.editorVersion);
     }
     const live = await inspectWorktree(worktree.root, binding.scope);
     return live.repoId === binding.repoId && live.worktreeId === binding.worktreeId && live.baseHeadSha === binding.baseHeadSha;

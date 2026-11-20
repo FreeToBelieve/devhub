@@ -1,5 +1,6 @@
 import { z } from 'zod';
 import { unityPlanSchema } from './unity.js';
+import { unityEditorVersionSchema } from './project.js';
 
 export const executionPolicyVersion = 1;
 export const runnerPlatformSchema = z.enum(['WINDOWS', 'MACOS']);
@@ -22,7 +23,8 @@ const repoPathSchema = z.string().min(1).max(512).refine((value) => value.split(
 export const executionScopeSchema = z.discriminatedUnion('operation', [
   z.strictObject({ operation: z.literal('workspace.write'), paths: z.array(repoPathSchema).min(1).max(16) }),
   z.strictObject({ operation: z.literal('process.run'), executable: z.literal('git'), action: z.enum(['status', 'diff-check']) }),
-  z.strictObject({ operation: z.literal('unity.run'), plan: unityPlanSchema, workspaceSha256: digestSchema, configSha256: digestSchema }),
+  z.strictObject({ operation: z.literal('unity.run'), plan: unityPlanSchema, workspaceSha256: digestSchema,
+    configSha256: digestSchema, editorVersion: unityEditorVersionSchema.optional() }),
   z.strictObject({
     operation: z.literal('codex.turn'),
     mode: z.enum(['start', 'resume']),
@@ -48,6 +50,8 @@ export const executionBindingSchema = z.strictObject({
   platform: runnerPlatformSchema,
   scope: executionScopeSchema,
   policyVersion: z.int().positive(),
+  projectId: z.uuid().optional(),
+  projectContextSha256: digestSchema.optional(),
 }).refine(({ codexThreadId, scope }) => {
   if (scope.operation === 'unity.run') return codexThreadId === null;
   if (scope.operation !== 'codex.turn') return codexThreadId !== null;
@@ -60,6 +64,7 @@ export const executionBindingSchema = z.strictObject({
 export const executionStateSchema = z.enum(['PENDING', 'APPROVED', 'DENIED', 'EXPIRED', 'CLAIMED', 'REVOKED']);
 export const executionRequestSchema = z.object({
   id: z.uuid(),
+  projectId: z.uuid(),
   binding: executionBindingSchema,
   bindingDigest: digestSchema,
   status: executionStateSchema,
@@ -113,6 +118,7 @@ export const worktreeRecordSchema = z.object({
   repoId: digestSchema,
   worktreeId: digestSchema,
   root: z.string().min(1),
+  projectId: z.uuid().optional(),
 });
 export const operatorSessionSchema = z.object({ csrfToken: digestSchema, expiresAt: z.int() });
 

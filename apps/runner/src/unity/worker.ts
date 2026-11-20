@@ -1,7 +1,6 @@
 import { rm, writeFile } from 'node:fs/promises';
 import { join } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
-import { unityVersion } from '@devhub/contracts';
 import type { UnityReport, UnityStage } from '@devhub/contracts';
 import {
   buildInventory, directoryBytes, editorArgs, finalizeUnityCapture, playerArgs, playerExecutable, readRegular, readUnityTests,
@@ -55,7 +54,7 @@ async function stage(input: UnityWorkerInput, phase: UnityStage, signal: AbortSi
   try {
     const markerReceipt = test ? null : await waitForEditorReady(() => readRegular(marker, 64_000).then((data) => {
       const json = JSON.parse(data.toString()) as Record<string, unknown>;
-      return json.run === input.id && (sceneStage || json.version === unityVersion) ? json : null;
+      return json.run === input.id && (sceneStage || json.version === input.editorVersion) ? json : null;
     }).catch(() => null), exited, local);
     const bounded = delay(input.plan.timeoutSeconds * 1000 + 1500 -
       Math.min(Date.now() - startedAt, input.plan.timeoutSeconds * 1000), null, { ref: false });
@@ -87,7 +86,7 @@ async function stage(input: UnityWorkerInput, phase: UnityStage, signal: AbortSi
       report.code = reason === 'UNITY_ARTIFACT_LIMIT' || reason === 'UNITY_ARTIFACT_UNSAFE' ? reason :
         signal.aborted ? 'UNITY_CANCELLED' : 'UNITY_TIMEOUT';
     }
-    else if (actualVersion && actualVersion !== unityVersion) report.code = 'UNITY_EDITOR_VERSION_MISMATCH';
+    else if (actualVersion && actualVersion !== input.editorVersion) report.code = 'UNITY_EDITOR_VERSION_MISMATCH';
     else if (diagnostics.some(({ severity, code }) => severity === 'error' && code.startsWith('CS'))) report.code = 'UNITY_COMPILATION_FAILED';
     else if (diagnostics.some(({ code }) => code === 'UNITY_LICENSE_UNAVAILABLE')) report.code = 'UNITY_LICENSE_UNAVAILABLE';
     else if (test && !tests) report.code = 'UNITY_TEST_REPORT_MISSING';
@@ -142,7 +141,8 @@ process.on('message', async (message: 'cancel' | UnityWorkerInput) => {
       reports.push(result.report);
       if (result.code || !result.normalExit) break;
     }
-    await writeFile(join(message.directory, 'run-summary.json'), JSON.stringify({ id: message.id, reports }),
+    await writeFile(join(message.directory, 'run-summary.json'), JSON.stringify({ id: message.id, projectId: message.projectId,
+      editorVersion: message.editorVersion, reports }),
       { mode: 0o600, flag: 'wx' });
   } catch {
     outcome.normalExit = !spawned;

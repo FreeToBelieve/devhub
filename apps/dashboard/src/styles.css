@@ -241,3 +241,15 @@ details[open] .chevron { transform: rotate(225deg); }
 .unity-run figure { margin: .8rem 0; }
 .unity-run img, .unity-run video { display: block; width: min(100%, 960px); max-height: 560px; object-fit: contain; }
 .unity-run pre { white-space: pre-wrap; }
+
+.project-picker { display: flex; align-items: center; gap: .55rem; min-width: 0; }
+.project-picker select { min-width: 8rem; max-width: min(25rem, 54vw); border: 1px solid var(--line); border-radius: 6px; padding: .42rem; }
+.project-registry { display: grid; gap: 1rem; }
+.project-form { max-width: none; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0 1rem; }
+.project-form > :is(.project-wide, fieldset, .alert, button) { grid-column: 1 / -1; }
+.project-documents { border: 1px solid var(--line); border-radius: 7px; display: grid; gap: .7rem; min-width: 0; }
+.project-form fieldset { border: 1px solid var(--line); margin-bottom: 1rem; padding: .8rem; }
+.project-document { display: grid; grid-template-columns: minmax(6rem, 1fr) minmax(8rem, 2fr) max-content; gap: .65rem; align-items: end; }
+.project-document :is(input, select) { margin: 0; }
+.project-activity { margin-block: 1rem; }
+@media (max-width: 580px) { .project-form, .project-document { grid-template-columns: 1fr; } }

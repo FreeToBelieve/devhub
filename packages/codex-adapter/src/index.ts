@@ -29,7 +29,7 @@ interface AdapterConfiguration {
 }
 
 export function codexConfiguration(worktree: string, platform = process.platform,
-  networkMode: DeveloperNetworkMode = 'OFF'): AdapterConfiguration {
+  networkMode: DeveloperNetworkMode = 'OFF', projectDocuments?: readonly string[]): AdapterConfiguration {
   if (networkMode === 'DEVELOPER_CONNECT' && platform !== 'darwin') throw new Error('PROXY_OS_CONTAINMENT_UNAVAILABLE');
   const thread: ThreadOptions = {
     approvalPolicy: 'never',
@@ -43,6 +43,11 @@ export function codexConfiguration(worktree: string, platform = process.platform
     default_permissions: 'PROJECT_DEVELOPER',
     shell_environment_policy: { inherit: 'none', ignore_default_excludes: false },
     features: { apps: false, plugins: false, remote_plugin: false, network_proxy: false },
+    ...(projectDocuments ? {
+      project_root_markers: ['ProjectSettings'],
+      developer_instructions: 'Work only in the approved Unity project. Read these registered project documents when relevant: ' +
+        JSON.stringify(projectDocuments) + '. Apply AGENTS.md within the approved project directory.',
+    } : {}),
     ...(platform === 'win32' ? { windows: { sandbox: 'elevated' } } : {}),
     mcp_servers: networkMode !== 'OFF' ? { devhub_dependencies: {
       enabled: true, command: process.execPath, args: [brokerPath, worktree, networkMode], required: true,
@@ -59,6 +64,14 @@ export function codexConfiguration(worktree: string, platform = process.platform
       workspaceSecretRules.map((pattern) => JSON.stringify(pattern) + ' = "deny"').join(', ') + '} }',
     'permissions.PROJECT_DEVELOPER.network.enabled=false',
   ];
+  if (projectDocuments) {
+    // An explicit absolute grant keeps a monorepo checkout from becoming a writable workspace root.
+    const exclusions = [...workspaceSecretRules, '.git', '**/.git', '.codex', '**/.codex', '.agents', '**/.agents'];
+    rawConfigOverrides.splice(0, 2,
+      'permissions.PROJECT_DEVELOPER.filesystem={ ":root" = "deny", ":minimal" = "read", ":tmpdir" = "deny", ' +
+        '":slash_tmp" = "deny", glob_scan_max_depth=24, ' + JSON.stringify(worktree) + ' = { "." = "write", ' +
+        exclusions.map((pattern) => JSON.stringify(pattern) + ' = "deny"').join(', ') + '} }');
+  }
   return {
     sdkVersion, thread, config, rawConfigOverrides, executionProfile: 'PROJECT_DEVELOPER', networkMode,
     dependencyDomains: networkMode !== 'OFF' ? developerDomains : [],
@@ -68,8 +81,8 @@ export function codexConfiguration(worktree: string, platform = process.platform
   };
 }
 
-export function codexConfigDigest(worktree: string, networkMode: DeveloperNetworkMode = 'OFF'): string {
-  return sha256(JSON.stringify(codexConfiguration(worktree, process.platform, networkMode)));
+export function codexConfigDigest(worktree: string, networkMode: DeveloperNetworkMode = 'OFF', projectDocuments?: readonly string[]): string {
+  return sha256(JSON.stringify(codexConfiguration(worktree, process.platform, networkMode, projectDocuments)));
 }
 
 function inside(root: string, candidate: string): boolean {
@@ -149,10 +162,12 @@ export async function streamCodexTurn(input: {
   threadId: string | null;
   signal: AbortSignal;
   networkMode?: DeveloperNetworkMode;
+  projectDocuments?: readonly string[];
 }): Promise<AsyncGenerator<ThreadEvent>> {
   const profile = await isolatedCodexHome(input.profile, input.worktree);
   input.signal.throwIfAborted();
-  const { thread, config, providerProxy, rawConfigOverrides } = codexConfiguration(input.worktree, process.platform, input.networkMode);
+  const { thread, config, providerProxy, rawConfigOverrides } = codexConfiguration(input.worktree, process.platform, input.networkMode,
+    input.projectDocuments);
   const sdk = new Codex({ env: codexEnvironment(process.env, profile, providerProxy), config, configOverrides: rawConfigOverrides });
   const conversation = input.threadId === null ? sdk.startThread(thread) : sdk.resumeThread(input.threadId, thread);
   return (await conversation.runStreamed(input.prompt, { signal: input.signal })).events;

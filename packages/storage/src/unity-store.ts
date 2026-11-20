@@ -1,24 +1,26 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { unityRunSchema, unityVersion } from '@devhub/contracts';
+import { legacyProjectId, legacyUnityEditorVersion, unityRunSchema } from '@devhub/contracts';
 import type { ExecutionRequest, UnityArtifact, UnityReport, UnityRun, UnityStage } from '@devhub/contracts';
 import { immediate } from './migrations.js';
 import { worktreeBusy } from './worktree-lock.js';
 
-const fields = `id,request_id AS requestId,task_id AS taskId,runner_id AS runnerId,worktree_id AS worktreeId,
+const fields = `id,request_id AS requestId,task_id AS taskId,runner_id AS runnerId,worktree_id AS worktreeId,project_id AS projectId,editor_version AS version,
   base_head_sha AS baseHeadSha,platform,plan,status,phase,pid,process_identity AS processIdentity,
   cancel_requested AS cancelRequested,started_at AS startedAt,finished_at AS finishedAt,
   exit_confirmed AS exitConfirmed,diagnostic,reports,artifacts`;
 
 function decode(row: Record<string, unknown> | undefined) {
-  return row && unityRunSchema.parse({ ...row, version: unityVersion, plan: JSON.parse(String(row.plan)),
+  return row && unityRunSchema.parse({ ...row, plan: JSON.parse(String(row.plan)),
     reports: JSON.parse(String(row.reports)), artifacts: JSON.parse(String(row.artifacts)),
     cancelRequested: row.cancelRequested === 1, exitConfirmed: row.exitConfirmed === 1 });
 }
 
 export function createUnityStore(database: DatabaseSync, clock: () => number) {
   const sql = (statement: string) => database.prepare(statement);
-  const get = (id: string) => decode(sql('SELECT ' + fields + ' FROM unity_runs WHERE id=?').get(id));
+  const get = (id: string, projectId?: string) => decode(projectId === undefined ?
+    sql('SELECT ' + fields + ' FROM unity_runs WHERE id=?').get(id) :
+    sql('SELECT ' + fields + ' FROM unity_runs WHERE id=? AND project_id=?').get(id, projectId));
   return {
     get,
     reserveWithinClaim(request: ExecutionRequest, workerId: string) {
@@ -30,19 +32,22 @@ export function createUnityStore(database: DatabaseSync, clock: () => number) {
         throw new Error('UNITY_APPROVAL_REQUIRED');
       }
       if (worktreeBusy(database, binding.worktreeId)) throw new Error('UNITY_WORKTREE_BUSY');
+      const configured = sql('SELECT unity_version FROM projects WHERE id=?').get(request.projectId)?.unity_version;
+      if (configured && scope.editorVersion !== configured) throw new Error('UNITY_PROJECT_VERSION_CHANGED');
       const id = randomUUID();
       const now = clock();
       sql(`INSERT INTO unity_runs(id,request_id,task_id,runner_id,worktree_id,base_head_sha,platform,plan,
-        status,worker_id,started_at,heartbeat_at) VALUES (?,?,?,?,?,?,?,?,'RUNNING',?,?,?)`)
+        status,worker_id,started_at,heartbeat_at,project_id,editor_version) VALUES (?,?,?,?,?,?,?,?,'RUNNING',?,?,?,?,?)`)
         .run(id, request.id, binding.taskId, binding.runnerId, binding.worktreeId, binding.baseHeadSha,
-          binding.platform, JSON.stringify(scope.plan), workerId, now, now);
+          binding.platform, JSON.stringify(scope.plan), workerId, now, now, request.projectId, scope.editorVersion ?? legacyUnityEditorVersion);
       return get(id)!;
     },
-    list() {
+    list(projectId = legacyProjectId) {
       const now = clock();
       sql("UPDATE unity_runs SET status='INTERRUPTED', finished_at=?, diagnostic='UNITY_WORKER_HEARTBEAT_EXPIRED' WHERE status='RUNNING' AND heartbeat_at<=?")
         .run(now, now - 15_000);
-      return sql('SELECT ' + fields + ' FROM unity_runs ORDER BY started_at DESC, rowid DESC LIMIT 100').all().map((row) => decode(row)!);
+      return sql('SELECT ' + fields + ' FROM unity_runs WHERE project_id=? ORDER BY started_at DESC, rowid DESC LIMIT 100')
+        .all(projectId).map((row) => decode(row)!);
     },
     heartbeat(id: string, workerId: string) {
       return sql("UPDATE unity_runs SET heartbeat_at=? WHERE id=? AND worker_id=? AND status='RUNNING'")

@@ -1,3 +1,4 @@
+import { inspectWorktree } from '../apps/hub/dist/worktree.js';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempDisposableSync, readFileSync, writeFileSync } from 'node:fs';
@@ -219,11 +220,14 @@ describe('Git delivery', () => {
       branches.set(operation.branch, operation.sha);
     } });
     try {
-      const projectId = randomUUID();
+      const identity = await inspectWorktree(repository);
+      const projectId = store.projects.create({ name: 'Fixture', repositoryRoot: identity.root, repoId: identity.repoId,
+        unityProjectPath: '.', unityVersion: '6000.3.28f1', targetPlatform: 'BOTH',
+        settings: { description: '', gameType: '', documents: [] } }).id;
       const connection = { projectId, provider: 'github' as const, repositoryUrl: endpoint.repositoryUrl, token: secret };
       await service.connect(connection, 0, owner);
       const tree = await service.prepare(projectId, repository, join(fixture.path, 'trees'), branchName, owner);
-      const task = store.create({ title: 'fixture', description: '', targetPlatform: 'BOTH' });
+      const task = store.create({ title: 'fixture', description: '', targetPlatform: 'BOTH' }, projectId);
       const input = {
         taskId: task.id, worktreeId: tree.worktreeId, branch: branchName, title: 'Isolated delivery',
         description: 'Fixture', author: { name: 'Fixture', email: 'fixture@example.invalid' },
@@ -233,7 +237,7 @@ describe('Git delivery', () => {
       writeFileSync(join(tree.root, 'fixture.txt'), 'changed');
       const stale = (await service.preview(projectId, input, owner, randomUUID())).operation;
       const staleApproval = store.git.approve(stale.id, { expectedVersion: stale.version, digest: stale.digest }, owner);
-      store.revise(task.id, task.revision, { title: 'revised fixture', description: '', targetPlatform: 'BOTH' });
+      store.revise(task.id, task.revision, { title: 'revised fixture', description: '', targetPlatform: 'BOTH' }, projectId);
       await expect(service.execute(stale.id, { expectedVersion: staleApproval.version, digest: stale.digest }, owner))
         .rejects.toThrow('GIT_WORKTREE_CHANGED');
       expect(() => store.git.approve(stale.id, { expectedVersion: staleApproval.version, digest: stale.digest }, owner))

@@ -1,7 +1,6 @@
 import fastify, { LogController } from 'fastify';
 import type { FastifyBaseLogger, FastifyInstance } from 'fastify';
 import fastifyStatic from '@fastify/static';
-import { createTaskSchema, taskIdSchema } from '@devhub/contracts';
 import { createLogger } from '@devhub/logger';
 import { inspectEnvironment } from '@devhub/runner';
 import { allowsLocalRequest } from '@devhub/security';
@@ -83,35 +82,6 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.get('/api/doctor', async () => inspectEnvironment());
-  app.get('/api/tasks', async () => ({ tasks: tasks.list() }));
-
-  app.get<{ Params: { id: string } }>('/api/tasks/:id', async (request, reply) => {
-    const id = taskIdSchema.safeParse(request.params.id);
-    if (!id.success) return reply.code(400).send({ code: 'INVALID_TASK_ID', message: '任务 ID 格式无效。' });
-
-    const task = tasks.get(id.data);
-    if (!task) return reply.code(404).send({ code: 'TASK_NOT_FOUND', message: '找不到该任务。' });
-    return task;
-  });
-
-  app.post('/api/tasks', async (request, reply) => {
-    const contentType = request.headers['content-type']?.split(';', 1)[0]?.trim().toLowerCase();
-    if (contentType !== 'application/json') {
-      return reply.code(415).send({ code: 'JSON_REQUIRED', message: '请使用 application/json 提交任务。' });
-    }
-
-    const input = createTaskSchema.safeParse(request.body);
-    if (!input.success) {
-      return reply.code(400).send({
-        code: 'INVALID_TASK',
-        message: '请检查标题、任务说明和目标平台。',
-      });
-    }
-
-    const task = tasks.create(input.data);
-    return reply.code(201).header('Location', `/api/tasks/${task.id}`).send(task);
-  });
-
   registerAuthorizationApi(app, tasks, options.port, clock, git, unity, options.codexWorktreeRoot);
 
   app.setErrorHandler((error, request, reply) => {

@@ -1,11 +1,11 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
-import { codexEventSchema, codexRunSchema } from '@devhub/contracts';
+import { codexEventSchema, codexRunSchema, legacyProjectId } from '@devhub/contracts';
 import type { CodexDiagnostic, CodexRun, CodexRunStatus, ExecutionRequest } from '@devhub/contracts';
 import { immediate } from './migrations.js';
 import { worktreeBusy } from './worktree-lock.js';
 
-const columns = `id AS devhubRunId, request_id AS requestId, worktree_id AS worktreeId,
+const columns = `id AS devhubRunId, request_id AS requestId, worktree_id AS worktreeId, project_id AS projectId,
   prompt_sha256 AS promptSha256, config_sha256 AS sdkConfigSha256, thread_id AS providerThreadId,
   provider_turn_id AS providerTurnId, previous_run_id AS previousRunId, status,
   cancel_requested AS cancelRequested, started_at AS startedAt, finished_at AS finishedAt,
@@ -18,7 +18,9 @@ function decode(row: Record<string, unknown> | undefined): CodexRun | undefined 
 
 export function createCodexStore(database: DatabaseSync, clock: () => number) {
   const sql = (query: string) => database.prepare(query);
-  const get = (id: string) => decode(sql('SELECT ' + columns + ' FROM codex_runs WHERE id=?').get(id));
+  const get = (id: string, projectId?: string) => decode(projectId === undefined ?
+    sql('SELECT ' + columns + ' FROM codex_runs WHERE id=?').get(id) :
+    sql('SELECT ' + columns + ' FROM codex_runs WHERE id=? AND project_id=?').get(id, projectId));
   const manages = (id: string) => !!sql('SELECT 1 FROM codex_worktrees WHERE worktree_id=?').get(id);
 
   return {
@@ -37,7 +39,7 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
       }
       if (worktreeBusy(database, binding.worktreeId)) throw new Error('CODEX_WORKTREE_BUSY');
       if (scope.mode === 'resume') {
-        const previous = scope.previousRunId && get(scope.previousRunId);
+        const previous = scope.previousRunId && get(scope.previousRunId, request.projectId);
         if (!previous || previous.providerThreadId === null || previous.providerThreadId !== binding.codexThreadId ||
             previous.worktreeId !== binding.worktreeId ||
             previous.status === 'RUNNING' || previous.status === 'INTERRUPTED') {
@@ -46,10 +48,10 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
       }
       const id = randomUUID();
       sql(`INSERT INTO codex_runs (id, request_id, worktree_id, prompt_sha256, config_sha256, thread_id,
-        previous_run_id, status, owner_pid, started_at, worker_id, heartbeat_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?)`)
+        previous_run_id, status, owner_pid, started_at, worker_id, heartbeat_at, project_id)
+        VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?)`)
         .run(id, request.id, binding.worktreeId, scope.promptSha256, scope.sdkConfigSha256,
-          binding.codexThreadId, scope.previousRunId, process.pid, clock(), workerId, clock());
+          binding.codexThreadId, scope.previousRunId, process.pid, clock(), workerId, clock(), request.projectId);
       return get(id)!;
     },
     append(id: string, input: unknown) {
@@ -58,7 +60,8 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
         const run = get(id);
         if (run?.status !== 'RUNNING') throw new Error('The Codex run is inactive.');
         if (event.kind === 'thread.started') {
-          if (!event.threadId || (run.providerThreadId && run.providerThreadId !== event.threadId)) {
+          if (!event.threadId || (run.providerThreadId && run.providerThreadId !== event.threadId) ||
+              sql('SELECT 1 FROM codex_runs WHERE thread_id=? AND project_id<>?').get(event.threadId, run.projectId)) {
             throw new Error('Codex returned an unexpected Thread identity.');
           }
           sql('UPDATE codex_runs SET thread_id=? WHERE id=?').run(event.threadId, id);
@@ -86,12 +89,12 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
           diagnostic ?? (exitConfirmed ? null : 'PROCESS_EXIT_UNCONFIRMED'), id, workerId);
       return get(id)!;
     },
-    list() {
+    list(projectId = legacyProjectId) {
       const now = clock();
       sql(`UPDATE codex_runs SET status='INTERRUPTED',finished_at=?,diagnostic_code='WORKER_HEARTBEAT_EXPIRED'
         WHERE status='RUNNING' AND heartbeat_at<=?`).run(now, now - heartbeatTimeout);
-      return sql('SELECT ' + columns + ' FROM codex_runs ORDER BY started_at DESC, rowid DESC LIMIT 100')
-        .all().map((row) => decode(row)!);
+      return sql('SELECT ' + columns + ' FROM codex_runs WHERE project_id=? ORDER BY started_at DESC, rowid DESC LIMIT 100')
+        .all(projectId).map((row) => decode(row)!);
     },
     events(id: string, after: number) {
       return sql(`SELECT seq, event_json AS eventJson, created_at AS createdAt FROM codex_run_events
