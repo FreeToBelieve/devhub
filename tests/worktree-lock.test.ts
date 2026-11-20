@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { Worker } from 'node:worker_threads';
 import { describe, expect, it } from 'vitest';
+import { legacyProjectId } from '../packages/contracts/dist/index.js';
 import type { ExecutionBinding, GitDeliveryBinding, GitOperation } from '../packages/contracts/dist/index.js';
 import { sha256 } from '../packages/security/dist/index.js';
 import { openTaskStore, taskSpecDigest } from '../packages/storage/dist/index.js';
@@ -13,12 +14,12 @@ type ClaimResult = { ok: true; id: string } | { ok: false; error: string };
 
 function makeFixture(filename: string, worktreeRoot: string) {
   const store = openTaskStore(filename, true);
-  const task = store.create({ title: 'Worktree lease fixture', description: '', targetPlatform: 'BOTH' });
+  const task = store.create({ title: 'Worktree lease fixture', description: '', targetPlatform: 'BOTH' }, legacyProjectId);
   const actor = sha256(store.execution.exchangeBootstrap(sha256(store.execution.createBootstrap().proof)).proof);
   const runner = store.execution.registerRunner({ label: 'Fixture Runner', deviceId: 'a'.repeat(64), platform: 'MACOS' });
   const worktree = store.execution.registerWorktree({
     worktreeId: 'b'.repeat(64), repoId: 'c'.repeat(64), root: worktreeRoot,
-  });
+  }, legacyProjectId);
   store.codex.manage(worktree.worktreeId);
   const context = { taskId: task.id, taskRevision: task.revision, taskSpecSha256: taskSpecDigest(task),
     repoId: worktree.repoId, worktreeId: worktree.worktreeId };
@@ -42,7 +43,7 @@ function makeFixture(filename: string, worktreeRoot: string) {
         bindingDigest: approval.bindingDigest, expectedVersion: approval.version, idempotencyKey: randomUUID(),
         proofDigest: sha256(proof), runnerId: runner.id, deviceId: runner.deviceId, workspaceMatches: true } };
     }
-    const projectId = randomUUID();
+    const projectId = legacyProjectId;
     const credentialRef = randomUUID();
     store.git.reserveCredential(projectId, credentialRef);
     store.git.connect({ projectId, provider: 'github', credentialRef, repositoryUrl: 'https://github.com/test/fixture',

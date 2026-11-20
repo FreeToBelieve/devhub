@@ -1,6 +1,6 @@
 # ShanHe DevHub
 
-《山河问仙》的本机开发工作台，支持任务管理、Codex 执行授权、受管工作树，以及 GitHub 和 GitLab 代码交付。
+本机多项目 Unity 开发工作台，支持项目登记、任务、Codex 执行授权、Unity 实机自动化和 GitHub / GitLab 代码交付。
 
 ## 启动
 
@@ -36,8 +36,8 @@ pnpm start
 | `DEVHUB_PORT` | 本机监听端口，默认 `4317`。修改后用实际端口打开 Dashboard |
 | `DEVHUB_DB_PATH` | 本机 SQLite 文件路径，可用绝对路径或相对仓库根目录的路径 |
 | `DEVHUB_LOG_LEVEL` | 结构化日志级别，默认 `info` |
-| `DEVHUB_UNITY_HUB_ROOT` | 自定义 Unity Hub Editor 根目录，内含 `6000.3.28f1` 版本子目录 |
-| `DEVHUB_UNITY_PROJECT` | 可选的 Unity 工程根目录，内含 `ProjectSettings/ProjectVersion.txt` |
+| `DEVHUB_UNITY_HUB_ROOT` | 自定义 Unity Hub Editor 根目录，内含各已安装 Editor 对应的版本子目录 |
+| `DEVHUB_UNITY_PROJECT` | 可选的 CLI Doctor 专用 Unity 工程根目录。Dashboard 读取各项目自己的工程路径 |
 | `DEVHUB_UNITY_ARTIFACT_ROOT` | 独立运行产物根目录，默认 `.devhub/unity-runs` |
 | `DEVHUB_UNITY_FFMPEG` | 可选的 FFmpeg 可执行文件绝对路径。未配置时从 `PATH` 查找 |
 
@@ -47,17 +47,28 @@ Windows 上，Hub 为默认 Unity 产物目录设置可继承的当前用户 DAC
 
 Hub 仅监听 `127.0.0.1`，请求使用同一地址和端口。应用可由同一台电脑上的进程访问。日志记录结构化运行信息，任务内容与凭据应分开保存。
 
+## 注册和切换项目
+
+先运行 `pnpm authorization bootstrap`，在 Dashboard「授权中心」登录，再进入「项目管理」。录入本地 Git 仓库根目录和 Unity 工程相对路径。Unity 位于仓库根目录时填 `.`。同一仓库的多个工程使用各自的子目录、Worktree 和授权。程序以 `ProjectSettings/ProjectVersion.txt` 读取所需版本，并检查对应的 Editor 和 Build Support。缺少匹配版本时可以保存项目登记，运行会等待安装。
+
+从页面顶部切换项目。任务、授权、Codex、Unity、Git 和规范随选择切换，已有后台运行继续完成。项目设置可登记工程内 Markdown 规范、修改配置或归档。项目路径和版本修改后，旧的执行审批须重新申请。历史记录归入可确认的 Git 项目或 Legacy / Unassigned，歧义见项目页迁移报告。[技术设计](project_work/requirement_docs/sprint-2-multi-project.md) · [验收报告](project_work/test_case/sprint-2-multi-project.md)
+
 ## 本机 API
 
 | 方法与路径 | 返回 |
 | --- | --- |
 | `GET /api/health` | Hub 状态 |
-| `GET /api/tasks` | 按创建时间倒序排列的任务 |
+| `GET /api/projects` | 登录后列出项目 |
+| `POST /api/projects` | 注册 Unity 项目 |
+| `GET /api/projects/:id` | 项目状态、环境和最近活动 |
+| `PUT /api/projects/:id` | 按版本更新项目设置并重新检测 |
+| `POST /api/projects/:id/archive` | 归档项目 |
+| `GET /api/tasks` | 按项目和创建时间查询任务 |
 | `POST /api/tasks` | 创建任务，返回 `201`、任务对象和 `Location` |
 | `GET /api/tasks/:id` | 查询指定任务 |
 | `GET /api/doctor` | 当前平台和逐项诊断结果 |
 
-创建任务使用 JSON，字段为 `title`、`description` 和 `targetPlatform`。目标平台可选 `WINDOWS`、`MACOS` 或 `BOTH`，说明可传空字符串。新任务的状态为 `CREATED`。
+创建任务使用 JSON，字段为 `projectId`、`title`、`description` 和 `targetPlatform`。目标平台可选 `WINDOWS`、`MACOS` 或 `BOTH`，说明可传空字符串。新任务的状态为 `CREATED`。项目 API 使用现有操作员会话，写入校验 Origin 和 CSRF。列表与详情可通过 `X-DevHub-Project-Id` 或 `projectId` 查询参数选择范围。
 
 ## 本地执行授权
 
@@ -65,7 +76,7 @@ Hub 仅监听 `127.0.0.1`，请求使用同一地址和端口。应用可由同�
 
 ```sh
 pnpm authorization runner-register "本机 Runner"
-pnpm authorization worktree-register "/path/to/clean/worktree"
+pnpm authorization worktree-register <project-id> "/path/to/linked/worktree"
 pnpm authorization bootstrap
 ```
 
@@ -92,10 +103,10 @@ macOS 要求目录与 `auth.json` 归当前用户所有，通常分别设置为 
 ```sh
 pnpm build
 pnpm authorization runner-register "本机 Runner"
-pnpm codex-runtime worktree-create "/path/to/clean/test-repo"
+pnpm codex-runtime worktree-create <project-id>
 ```
 
-在 Dashboard 的「授权中心」选择受管工作树和 Runner，发起并批准「Codex 新 Thread」或「Codex 恢复 Thread」。`PROJECT_DEVELOPER` 允许读写整棵工作树，开发网络默认关闭。选择 `DEVELOPER_ALLOWLIST` 时，Codex 可通过受控工具下载公共 UPM、npm 和 GitHub 依赖。Shell 的网络保持关闭。将审批时使用的同一份 UTF-8 提示词交给终端命令的标准输入。换行也属于摘要输入。Windows PowerShell 可用 `Get-Content -Raw` 配合 UTF-8 输入管道，或直接从 CMD 重定向文件。
+在 Dashboard 的「授权中心」选择受管工作树和 Runner，发起并批准「Codex 新 Thread」或「Codex 恢复 Thread」。`PROJECT_DEVELOPER` 允许在当前项目目录中读写，开发网络默认关闭。选择 `DEVELOPER_ALLOWLIST` 时，Codex 可通过受控工具下载公共 UPM、npm 和 GitHub 依赖。Shell 的网络保持关闭。将审批时使用的同一份 UTF-8 提示词交给终端命令的标准输入。换行也属于摘要输入。Windows PowerShell 可用 `Get-Content -Raw` 配合 UTF-8 输入管道，或直接从 CMD 重定向文件。
 
 ```text
 pnpm codex-runtime run <grant-id> <version> <binding-digest> <idempotency-key> < prompt.txt
@@ -111,9 +122,9 @@ Dashboard 的「Codex 执行」增量读取脱敏事件和诊断，可请求取�
 
 macOS 可在授权中心为本次 Turn 选择 `DEVELOPER_CONNECT`，运行受控 npm、pnpm、Git 和 Unity 公共归档命令。工作树秘密检测、CONNECT 网络边界及 VM Runner 方案见 [Sprint 2.3C 设计](project_work/requirement_docs/sprint-2-developer-completion.md) 和 [验收报告](project_work/test_case/sprint-2-developer-completion.md)。
 
-## Unity 6.3 运行自动化
+## Unity 运行自动化
 
-在目标机器安装 `6000.3.28f1` 和本机平台的 Build Support，激活 Editor 许可证。运行 Player 和采集 Game View 需要桌面图形会话，录制还需要支持 H.264 的 FFmpeg。将本仓库 `packages/unity-adapter/unity-package` 复制到独立测试工程的 `Packages/com.devhub.unity-automation` 并提交到源测试仓库。测试工程须安装 Unity Test Framework，场景验证须提供 Runtime bridge 使用的测试输入组件和关键对象。参考 [`scripts/unity-fixture`](scripts/unity-fixture/) 中的示例。
+在目标机器安装每个工程声明的准确版本及本机平台的 Build Support，激活 Editor 许可证。运行 Player 和采集 Game View 需要桌面图形会话，录制还需要支持 H.264 的 FFmpeg。将本仓库 `packages/unity-adapter/unity-package` 复制到独立测试工程的 `Packages/com.devhub.unity-automation` 并提交到源测试仓库。测试工程须安装 Unity Test Framework，场景验证须提供 Runtime bridge 使用的测试输入组件和关键对象。参考 [`scripts/unity-fixture`](scripts/unity-fixture/) 中的示例。
 
 通过 `pnpm codex-runtime worktree-create` 创建受管 Worktree。在 Dashboard 登录授权中心，进入「Unity 测试」，选择 Task、Runner 和工作树，创建申请、批准，再启动。Editor、导入与编译、EditMode、PlayMode、构建、Player 和 Game View 可以分别发起。场景路径和采集设置随申请绑定。Unity 会以本机用户身份执行受信工程的代码。
 

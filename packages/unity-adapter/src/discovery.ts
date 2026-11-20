@@ -1,13 +1,14 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
-import { access, lstat, readFile, realpath, stat, statfs } from 'node:fs/promises';
+import { access, lstat, readdir, realpath, stat, statfs } from 'node:fs/promises';
 import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { unityScenePathSchema, unityVersion } from '@devhub/contracts';
+import { supportsUnityEditorVersion, unityEditorVersionSchema, unityScenePathSchema } from '@devhub/contracts';
 import type { UnityEnvironment, UnityPlan } from '@devhub/contracts';
 import { sha256, windowsPowerShellEnvironment, windowsPowerShellPath } from '@devhub/security';
 import { pathInside } from './artifacts.js';
+import { readRegular } from './protocol.js';
 
 const exec = promisify(execFile);
 export const unityPolicyVersion = 1;
@@ -60,29 +61,57 @@ async function graphicsAvailable() {
   } catch { return false; }
 }
 
+async function executableVersion(path: string, windows: boolean) {
+  try {
+    const { stdout } = windows
+      ? await exec(windowsPowerShellPath(), ['-NoProfile', '-NonInteractive', '-Command',
+        '[Diagnostics.FileVersionInfo]::GetVersionInfo($env:DEVHUB_EDITOR_CHECK).ProductVersion'], {
+        env: { ...windowsPowerShellEnvironment(), DEVHUB_EDITOR_CHECK: path }, timeout: 4000, windowsHide: true,
+      })
+      : await exec('/usr/bin/plutil', ['-extract', 'CFBundleVersion', 'raw', '-o', '-', join(dirname(path), '..', 'Info.plist')],
+        { timeout: 4000 });
+    return stdout.trim().match(/(?:^|\s)(\d{1,4}\.\d{1,2}\.\d{1,4}[abfp]\d{1,5})(?=$|[\s+])/i)?.[1] ?? null;
+  } catch { return null; }
+}
+
 export async function inspectUnityEnvironment(project?: string, env = process.env): Promise<UnityEnvironment> {
   const windows = process.platform === 'win32';
   const supported = windows ? process.arch === 'x64' : process.platform === 'darwin' && process.arch === 'arm64';
   const platform = supported ? (windows ? 'WINDOWS' : 'MACOS') : null;
-  let editor: string | null = null;
-  let buildSupport = false;
   let projectVersion: string | null = null;
   let projectLocked = false;
   let layoutValid = true;
-  const paths = windows ? ['Editor', 'Unity.exe'] : ['Unity.app', 'Contents', 'MacOS', 'Unity'];
-  if (supported) for (const root of unityEditorRoots(env)) {
-    editor = await executable(join(root, unityVersion, ...paths));
-    if (editor) break;
-  }
-  if (editor) buildSupport = await exists(windows
-    ? join(dirname(editor), 'Data', 'PlaybackEngines', 'WindowsStandaloneSupport')
-    : join(dirname(editor), '..', 'PlaybackEngines', 'MacStandaloneSupport'));
   if (project) {
-    const version = await readFile(join(project, 'ProjectSettings', 'ProjectVersion.txt'), 'utf8').catch(() => '');
-    projectVersion = /^m_EditorVersion:[ \t]*(\d+\.\d+\.\d+[abfp]\d+)\s*$/m.exec(version)?.[1] ?? null;
+    const file = await readRegular(join(project, 'ProjectSettings', 'ProjectVersion.txt'), 16 * 1024)
+      .then((contents) => contents.toString('utf8')).catch(() => '');
+    const parsed = unityEditorVersionSchema.safeParse(/^m_EditorVersion:[ \t]*(\S+)[ \t]*\r?$/m.exec(file)?.[1]);
+    projectVersion = parsed.success ? parsed.data : null;
     projectLocked = await exists(join(project, 'Temp', 'UnityLockfile'));
     layoutValid = (await lstat(join(project, 'Assets')).catch(() => undefined))?.isDirectory() === true;
   }
+  const paths = windows ? ['Editor', 'Unity.exe'] : ['Unity.app', 'Contents', 'MacOS', 'Unity'];
+  const installed = new Map<string, string[]>();
+  if (supported) for (const root of unityEditorRoots(env)) {
+    const versions = await readdir(root).catch(() => []);
+    for (const version of new Set([...versions, ...(projectVersion ? [projectVersion] : [])])) {
+      if (!supportsUnityEditorVersion(version)) continue;
+      const path = await executable(join(root, version, ...paths));
+      if (path) installed.set(version, [...(installed.get(version) ?? []), path]);
+    }
+  }
+  const installedVersions = [...installed.keys()].sort((a, b) => b.localeCompare(a, 'en', { numeric: true }));
+  const choices = project ? projectVersion ? [projectVersion] : [] : installedVersions;
+  let selected: { version: string; path: string } | undefined;
+  for (const version of choices) {
+    const path = (await Promise.all((installed.get(version) ?? []).map(async (file) =>
+      await executableVersion(file, windows) === version ? file : null))).find((entry) => entry !== null);
+    if (path) { selected = { version, path }; break; }
+  }
+  const editor = selected?.path ?? null;
+  const supportDirectory = editor ? (windows
+    ? join(dirname(editor), 'Data', 'PlaybackEngines', 'WindowsStandaloneSupport')
+    : join(dirname(editor), '..', 'PlaybackEngines', 'MacStandaloneSupport')) : null;
+  const buildSupport = supportDirectory ? (await stat(supportDirectory).catch(() => null))?.isDirectory() === true : false;
   const hubPaths = windows
     ? [join(env.ProgramFiles ?? 'C:\\Program Files', 'Unity Hub', 'Unity Hub.exe')]
     : ['/Applications/Unity Hub.app', join(homedir(), 'Applications', 'Unity Hub.app')];
@@ -97,12 +126,14 @@ export async function inspectUnityEnvironment(project?: string, env = process.en
   const diagnostics = [
     ...(!platform ? ['UNITY_PLATFORM_UNSUPPORTED'] : []), ...(!editor ? ['UNITY_EDITOR_MISSING'] : []),
     ...(editor && !buildSupport ? ['UNITY_BUILD_SUPPORT_MISSING'] : []),
-    ...(project && projectVersion !== unityVersion ? ['UNITY_PROJECT_VERSION_MISMATCH'] : []),
+    ...(project && !projectVersion ? ['UNITY_PROJECT_VERSION_MISMATCH'] : []),
+    ...(projectVersion && !supportsUnityEditorVersion(projectVersion) ? ['UNITY_EDITOR_VERSION_UNSUPPORTED'] : []),
+    ...(projectVersion && installed.has(projectVersion) && !selected ? ['UNITY_EDITOR_VERSION_UNVERIFIED'] : []),
     ...(!layoutValid ? ['UNITY_PROJECT_LAYOUT_INVALID'] : []),
     ...(projectLocked ? ['UNITY_PROJECT_LOCKED'] : []), ...(!graphics ? ['UNITY_GRAPHICS_UNAVAILABLE'] : []),
     ...(freeBytes === null || freeBytes < minimumFreeBytes ? ['UNITY_DISK_LIMIT'] : []),
   ];
-  return { version: unityVersion, platform, editor, hub: hubs.some(Boolean), projectVersion, buildSupport,
+  return { version: selected?.version ?? projectVersion, installedVersions, platform, editor, hub: hubs.some(Boolean), projectVersion, buildSupport,
     license: licenses.some(Boolean) ? 'FILE_PRESENT' : 'UNVERIFIED', graphics, freeBytes, projectLocked, diagnostics };
 }
 
@@ -116,21 +147,23 @@ export async function verifyUnityScene(project: string, scene: string) {
   }
 }
 
-export async function unityConfiguration(project: string, plan: UnityPlan) {
+export async function unityConfiguration(project: string, plan: UnityPlan, configuredVersion?: string | null, env = process.env) {
   if (plan.scene) await verifyUnityScene(project, plan.scene);
-  const environment = await inspectUnityEnvironment(project);
-  if (!environment.editor || !environment.platform || environment.projectVersion !== unityVersion ||
+  const environment = await inspectUnityEnvironment(project, env);
+  if (configuredVersion && environment.projectVersion !== configuredVersion) throw new Error('UNITY_PROJECT_VERSION_CHANGED');
+  if (!environment.editor || !environment.platform || !environment.projectVersion || environment.version !== environment.projectVersion ||
       environment.projectLocked || environment.freeBytes === null || environment.freeBytes < minimumFreeBytes) {
-    throw new Error(environment.diagnostics.find((code) => code !== 'UNITY_GRAPHICS_UNAVAILABLE' &&
+    throw new Error(environment.diagnostics.find((code) => code.startsWith('UNITY_EDITOR_VERSION_')) ??
+      environment.diagnostics.find((code) => code !== 'UNITY_GRAPHICS_UNAVAILABLE' &&
       code !== 'UNITY_BUILD_SUPPORT_MISSING') ?? 'UNITY_ENVIRONMENT_UNAVAILABLE');
   }
   if (environment.diagnostics.includes('UNITY_PROJECT_LAYOUT_INVALID')) throw new Error('UNITY_PROJECT_LAYOUT_INVALID');
   if (['BUILD', 'PLAYER', 'PIPELINE'].includes(plan.stage) && !environment.buildSupport) throw new Error('UNITY_BUILD_SUPPORT_MISSING');
   if (['EDITOR', 'GAME_VIEW', 'PLAYER', 'PIPELINE'].includes(plan.stage) && !environment.graphics) throw new Error('UNITY_GRAPHICS_UNAVAILABLE');
-  const ffmpeg = plan.capture ? await findFfmpeg() : null;
+  const ffmpeg = plan.capture ? await findFfmpeg(env) : null;
   if (plan.capture && !ffmpeg) throw new Error('UNITY_CAPTURE_ENCODER_MISSING');
   const binary = await stat(environment.editor, { bigint: true });
-  const configSha256 = sha256(JSON.stringify({ policy: unityPolicyVersion, version: unityVersion, plan,
+  const configSha256 = sha256(JSON.stringify({ policy: unityPolicyVersion, version: environment.projectVersion, plan,
     platform: environment.platform, executable: environment.editor, size: binary.size.toString(), mtimeNs: binary.mtimeNs.toString(), ffmpeg }));
-  return { environment, configSha256, editor: environment.editor, ffmpeg };
+  return { environment, configSha256, editor: environment.editor, editorVersion: environment.projectVersion, ffmpeg };
 }

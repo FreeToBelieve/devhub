@@ -1,3 +1,4 @@
+import { legacyProjectId } from '../packages/contracts/dist/index.js';
 import assert from 'node:assert/strict';
 import { execFile, execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
@@ -168,10 +169,10 @@ public static class DevHubFixture {
     const tree = await inspectCodexWorktree(worktree);
     const store = openTaskStore(join(root, 'data', 'unity.sqlite'), true);
     try {
-      store.execution.registerWorktree(tree);
+      store.execution.registerWorktree(tree, legacyProjectId);
       store.codex.manage(tree.worktreeId);
       const runner = store.execution.registerRunner({ ...localDevice(), label: 'Unity live fixture' });
-      const task = store.create({ title: 'Unity developer fixture', description: 'Disposable project', targetPlatform: 'MACOS' });
+      const task = store.create({ title: 'Unity developer fixture', description: 'Disposable project', targetPlatform: 'MACOS' }, legacyProjectId);
       const session = sha256(store.execution.exchangeBootstrap(sha256(store.execution.createBootstrap().proof)).proof);
       const files = ['Assets/Scenes/Fixture.unity', 'Assets/Prefabs/Fixture.prefab', 'ProjectSettings/ProjectSettings.asset',
         'Assets/Shaders/Fixture.shader.meta', 'Assets/Shaders/Fixture.shader', 'Assets/FixtureBehavior.cs'];

@@ -7,7 +7,7 @@ import {
   developerNetworkModeSchema,
 } from '@devhub/contracts';
 import type { ExecutionRequest, ExecutionAuditEvent, ExecutionState, CodexRun } from '@devhub/contracts';
-import { request } from './api.js';
+import { scopedRequest } from './api.js';
 
 const catalogSchema = z.object({
   tasks: z.array(taskSchema.extend({ taskSpecSha256: digestSchema })),
@@ -42,14 +42,15 @@ const messages: Record<string, string> = {
   INVALID_AUTHORIZATION_INPUT: '请检查任务、线程 ID 和操作参数。',
 };
 
-export function Authorization() {
+export function Authorization({ projectId, registered, onSessionChange }: { projectId: string; registered: boolean; onSessionChange(): void }) {
+  const request = scopedRequest(projectId);
   const [session, setSession] = useState<Session>();
   const [ready, setReady] = useState(false);
   const [catalog, setCatalog] = useState<Catalog>();
   const [items, setItems] = useState<ExecutionRequest[]>([]);
   const [runs, setRuns] = useState<CodexRun[]>([]);
   const [audit, setAudit] = useState<Record<string, ExecutionAuditEvent[]>>({});
-  const [operation, setOperation] = useState('status');
+  const [operation, setOperation] = useState(registered ? 'codex.start' : 'status');
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState('');
   const keys = useRef(new Map<string, string>());
@@ -112,6 +113,7 @@ export function Authorization() {
       setSession(await request('/api/operator/session', operatorSessionSchema, {
         method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ bootstrapCredential }),
       }));
+      onSessionChange();
     });
   }
 
@@ -208,6 +210,7 @@ export function Authorization() {
             setRuns([]);
             setAudit({});
             setSession(undefined);
+            onSessionChange();
           })}>退出</button>
         </div>
       </div>
@@ -265,11 +268,11 @@ export function Authorization() {
         <select id="authorization-worktree" name="worktree" required>{catalog?.worktrees.map((entry) => <option key={entry.worktreeId} value={entry.worktreeId}>{entry.root}</option>)}</select>
         <label htmlFor="authorization-operation">操作范围</label>
         <select id="authorization-operation" name="operation" value={operation} onChange={(event) => setOperation(event.target.value)}>
-          <option value="status">Git status</option>
-          <option value="diff-check">Git diff 检查</option>
-          <option value="workspace.write">限定文件写入</option>
-          <option value="codex.start">Codex 新 Thread · 整个工作树</option>
-          <option value="codex.resume">Codex 恢复 Thread · 整个工作树</option>
+          {!registered && <><option value="status">Git status</option>
+            <option value="diff-check">Git diff 检查</option>
+            <option value="workspace.write">限定文件写入</option></>}
+          <option value="codex.start">Codex 新 Thread · 当前项目</option>
+          <option value="codex.resume">Codex 恢复 Thread · 当前项目</option>
         </select>
         {operation.startsWith('codex.') ? <>
           <label htmlFor="authorization-network">Project Developer 网络范围</label>

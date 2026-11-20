@@ -11,30 +11,33 @@ import type { TaskStore } from '@devhub/storage';
 import { inspectCodexWorktree } from './codex-worktree.js';
 import type { gitDelivery } from './git-delivery.js';
 import type { AuthorizationRoutes } from './authorization-api.js';
+import { projectBinding } from './project-context.js';
 
 const project = z.uuid();
 const number = z.coerce.number().int().positive();
 const connectionInput = gitProjectInput.extend({ expectedVersion: z.int().nonnegative() });
-const projectQuery = z.strictObject({ projectId: project });
 
 export function registerGitApi(routes: AuthorizationRoutes, tasks: TaskStore, git: ReturnType<typeof gitDelivery>, treeDirectory?: string) {
-  const { route, session, parse, input, key } = routes;
-  const projectId = (request: FastifyRequest) => parse(projectQuery, request.query).projectId;
+  const { route, session, parse, input, key, project: selected } = routes;
+  const projectId = (request: FastifyRequest) => selected(request).id;
   const changeNumber = (id: string) => parse(number, id);
   route('GET', '/api/git/connections', (request) => {
     session(request);
-    return { connections: tasks.git.connections(), tasks: tasks.list(),
-      worktrees: tasks.execution.catalog().worktrees.filter((tree) => tasks.codex.manages(tree.worktreeId)),
-      runners: tasks.execution.catalog().runners };
+    const id = projectId(request);
+    const catalog = tasks.execution.catalog(id);
+    return { connections: tasks.git.connections().filter((connection) => connection.projectId === id), tasks: tasks.list(id),
+      worktrees: catalog.worktrees.filter((tree) => tasks.codex.manages(tree.worktreeId)), runners: catalog.runners };
   });
   route('PUT', '/api/git/connections', (request) => {
     const actor = session(request, true);
     const { expectedVersion, ...project } = input(request, connectionInput);
+    tasks.projects.require(selected(request, project.projectId).id, true, true);
     return git.connect(project, expectedVersion, actor.digest);
   });
   route('POST', '/api/git/connections/revoke', async (request, reply) => {
     const { digest } = session(request, true);
     const body = input(request, z.strictObject({ projectId: project, expectedVersion: z.int().positive() }));
+    selected(request, body.projectId);
     await git.revoke(body.projectId, body.expectedVersion, digest);
     return reply.code(204).send();
   });
@@ -46,6 +49,7 @@ export function registerGitApi(routes: AuthorizationRoutes, tasks: TaskStore, gi
     const actor = session(request, true);
     const body = input(request, z.strictObject({ projectId: project,
       repositoryRoot: z.string().min(1).max(2048), branch: deliveryBranchName }));
+    selected(request, body.projectId);
     if (!treeDirectory) throw new GitStateError('GIT_WORKTREE_ROOT_UNAVAILABLE');
     return git.prepare(body.projectId, resolve(body.repositoryRoot), treeDirectory, body.branch, actor.digest);
   });
@@ -58,15 +62,20 @@ export function registerGitApi(routes: AuthorizationRoutes, tasks: TaskStore, gi
   route('POST', '/api/git/operations', (request) => {
     const actor = session(request, true);
     const { projectId: id, operationId, ...binding } = input(request, gitDeliveryInput.extend({ projectId: project, operationId: z.uuid() }));
+    selected(request, id);
     return git.preview(id, binding, actor.digest, operationId);
   });
   route('POST', '/api/git/operations/:id/approve', (request) => {
     const actor = session(request, true);
-    return tasks.git.approve(parse(project, request.params.id), input(request, gitDeliveryApproval), actor.digest);
+    const id = parse(project, request.params.id);
+    if (tasks.git.operation(id)?.projectId !== projectId(request)) throw new GitStateError('GIT_OPERATION_NOT_FOUND');
+    return tasks.git.approve(id, input(request, gitDeliveryApproval), actor.digest);
   });
   route('POST', '/api/git/operations/:id/execute', (request) => {
     const actor = session(request, true);
-    return git.execute(parse(project, request.params.id), input(request, gitDeliveryApproval), actor.digest);
+    const id = parse(project, request.params.id);
+    if (tasks.git.operation(id)?.projectId !== projectId(request)) throw new GitStateError('GIT_OPERATION_NOT_FOUND');
+    return git.execute(id, input(request, gitDeliveryApproval), actor.digest);
   });
   route('GET', '/api/git/changes/:id', (request) => {
     session(request);
@@ -82,24 +91,26 @@ export function registerGitApi(routes: AuthorizationRoutes, tasks: TaskStore, gi
   });
   route('POST', '/api/git/changes/:id/follow-up', async (request) => {
     const actor = session(request, true);
-    const id = projectId(request);
+    const registry = selected(request);
+    const id = registry.id;
     const change = changeNumber(request.params.id);
     const body = input(request, z.strictObject({
       operationId: z.uuid(), runId: z.uuid(), runnerId: z.uuid(), instructions: z.string().trim().min(1).max(6000),
     }));
     const operation = tasks.git.operation(body.operationId);
-    const run = tasks.codex.get(body.runId);
+    const run = tasks.codex.get(body.runId, id);
     if (!operation || operation.projectId !== id || operation.changeNumber !== change || operation.phase !== 'DELIVERED' ||
         run?.status !== 'COMPLETED' || !run.providerThreadId || run.worktreeId !== operation.binding.worktreeId) {
       throw new GitStateError('GIT_FOLLOW_UP_UNAVAILABLE');
     }
-    const task = tasks.get(operation.binding.taskId);
-    const runner = tasks.execution.catalog().runners.find(({ id }) => id === body.runnerId);
+    const task = tasks.get(operation.binding.taskId, id);
+    const runner = tasks.execution.catalog(id).runners.find(({ id }) => id === body.runnerId);
     if (!task || !runner || tasks.git.busy(run.worktreeId)) throw new GitStateError('GIT_FOLLOW_UP_UNAVAILABLE');
     const digest = sha256(body.instructions);
-    const context = await inspectCodexWorktree(operation.binding.worktreeRoot, 'OFF', true);
+    const context = await inspectCodexWorktree(operation.binding.worktreeRoot, 'OFF', true, undefined, registry);
     if (context.baseHeadSha !== operation.commitSha || context.worktreeId !== run.worktreeId) throw new GitStateError('GIT_HEAD_CHANGED');
     return tasks.execution.createRequest({
+      ...projectBinding(registry),
       taskId: task.id, taskRevision: task.revision, taskSpecSha256: taskSpecDigest(task),
       repoId: context.repoId, worktreeId: context.worktreeId, baseHeadSha: context.baseHeadSha,
       codexThreadId: run.providerThreadId, runnerId: runner.id, platform: runner.platform,

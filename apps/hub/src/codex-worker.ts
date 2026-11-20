@@ -7,6 +7,7 @@ export interface WorkerInput {
   prompt: string;
   threadId: string | null;
   networkMode: DeveloperNetworkMode;
+  projectDocuments?: readonly string[];
 }
 
 const abort = new AbortController();

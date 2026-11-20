@@ -19,6 +19,7 @@ export const createTaskSchema = z.strictObject({
 export const taskIdSchema = z.uuid();
 export const taskSchema = createTaskSchema.extend({
   id: taskIdSchema,
+  projectId: z.uuid(),
   status: taskStatusSchema,
   createdAt: z.iso.datetime(),
   revision: z.int().positive().default(1),
@@ -49,3 +50,4 @@ export type DoctorReport = z.infer<typeof doctorReportSchema>;
 export * from './git-delivery.js';
 
 export * from './unity.js';
+export * from './project.js';

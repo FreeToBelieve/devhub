@@ -4,6 +4,8 @@ import { AuthorizationError, openTaskStore } from '@devhub/storage';
 import { executeApprovedTurn } from './codex-runtime.js';
 import { createCodexWorktree } from './codex-worktree.js';
 import { readRuntimeConfig } from './runtime-config.js';
+import { join } from 'node:path';
+import { projectWorkspace } from './project-context.js';
 
 async function readPrompt(): Promise<string> {
   const chunks: Buffer[] = [];
@@ -20,7 +22,7 @@ async function readPrompt(): Promise<string> {
 async function main(args: string[]) {
   const [command, first, version, bindingDigest, idempotencyKey] = args;
   if (!command || command === '--help') {
-    console.log('pnpm codex-runtime worktree-create <clean-repo-root>\npnpm codex-runtime run <grant-id> <version> <binding-digest> <idempotency-key> < prompt.txt');
+    console.log('pnpm codex-runtime worktree-create <project-id>\npnpm codex-runtime run <grant-id> <version> <binding-digest> <idempotency-key> < prompt.txt');
     return;
   }
   if (!(command === 'worktree-create' && args.length === 2) && !(command === 'run' && args.length === 5)) {
@@ -30,10 +32,12 @@ async function main(args: string[]) {
   const store = openTaskStore(config.databasePath, config.managedDataDirectory);
   try {
     if (command === 'worktree-create') {
-      const identity = await createCodexWorktree(z.string().min(1).parse(first), config.codexWorktreeRoot);
-      store.execution.registerWorktree(identity);
+      const project = store.projects.require(z.uuid().parse(first), true, true);
+      const identity = await createCodexWorktree(project.repositoryRoot!, join(config.codexWorktreeRoot, project.id), project);
+      await projectWorkspace(project, identity.root);
+      const saved = store.execution.registerWorktree(identity, project.id);
       store.codex.manage(identity.worktreeId);
-      console.log(JSON.stringify(identity));
+      console.log(JSON.stringify(saved));
       return;
     }
     const claim = runnerClaimInputSchema.parse({

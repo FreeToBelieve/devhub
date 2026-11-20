@@ -1,3 +1,4 @@
+import { legacyProjectId } from '../packages/contracts/dist/index.js';
 import { mkdirSync, mkdtempDisposableSync, symlinkSync, writeFileSync } from 'node:fs';
 import { randomUUID } from 'node:crypto';
 import { tmpdir } from 'node:os';
@@ -5,7 +6,7 @@ import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { executionScopeSchema, unityPlanSchema } from '../packages/contracts/dist/index.js';
 import { artifactMime, directoryBytes, initializeUnityArtifactRoot, inspectUnityEnvironment, parseUnityTests, pngDimensions,
-  readArtifact, sanitizeUnityText, unityDiagnostics, verifyUnityScene }
+  readArtifact, sanitizeUnityText, unityConfiguration, unityDiagnostics, verifyUnityScene }
   from '../packages/unity-adapter/dist/index.js';
 import { startEditor, waitForEditorReady } from '../apps/runner/dist/unity/process.js';
 import { createServer } from '../apps/hub/dist/server.js';
@@ -30,7 +31,7 @@ describe('Unity Runner controls', () => {
     writeFileSync(join(fixture.path, 'Temp', 'UnityLockfile'), '');
     const report = await inspectUnityEnvironment(fixture.path);
     expect(report).toMatchObject({ projectVersion: '6000.3.27f1', projectLocked: true });
-    expect(report.diagnostics).toContain('UNITY_PROJECT_VERSION_MISMATCH');
+    expect(report.diagnostics).toContain('UNITY_EDITOR_MISSING');
     expect(report.diagnostics).toContain('UNITY_PROJECT_LOCKED');
   });
 
@@ -64,6 +65,34 @@ describe('Unity Runner controls', () => {
     await expect(fixture.waitForEditorExit()).resolves.toMatchObject({ code: 2 });
   });
 
+  it.skipIf(process.platform !== 'darwin' || process.arch !== 'arm64')('selects the exact project Editor using bundle metadata without launching it', async () => {
+    using fixture = mkdtempDisposableSync(join(tmpdir(), 'devhub-dynamic-editor-'));
+    const project = join(fixture.path, 'project');
+    const editorRoot = join(fixture.path, 'editors');
+    const version = '2022.3.654f1';
+    const contents = join(editorRoot, version, 'Unity.app', 'Contents');
+    const executable = join(contents, 'MacOS', 'Unity');
+    mkdirSync(join(project, 'ProjectSettings'), { recursive: true });
+    mkdirSync(join(project, 'Assets'));
+    writeFileSync(join(project, 'ProjectSettings', 'ProjectVersion.txt'), 'm_EditorVersion: ' + version + '\n');
+    writeFileSync(join(project, 'Assets', 'Fixture.unity'), '%YAML 1.1\n');
+    mkdirSync(join(contents, 'MacOS'), { recursive: true });
+    writeFileSync(executable, '', { mode: 0o700 });
+    const stamp = (reported: string) => writeFileSync(join(contents, 'Info.plist'),
+      '<?xml version="1.0"?><plist version="1.0"><dict><key>CFBundleVersion</key><string>' + reported + '</string></dict></plist>');
+    const env = { DEVHUB_UNITY_HUB_ROOT: editorRoot };
+    stamp('2022.3.653f1');
+    expect(await inspectUnityEnvironment(project, env)).toMatchObject({ editor: null, projectVersion: version,
+      diagnostics: expect.arrayContaining(['UNITY_EDITOR_VERSION_UNVERIFIED']) });
+    stamp(version);
+    const plan = { stage: 'BUILD' as const, scene: 'Assets/Fixture.unity', timeoutSeconds: 30 };
+    await expect(unityConfiguration(project, plan, '2022.3.653f1', env)).rejects.toThrow('UNITY_PROJECT_VERSION_CHANGED');
+    await expect(unityConfiguration(project, plan, version, env)).rejects.toThrow('UNITY_BUILD_SUPPORT_MISSING');
+    mkdirSync(join(contents, 'PlaybackEngines', 'MacStandaloneSupport'), { recursive: true });
+    expect(await unityConfiguration(project, plan, version, env)).toMatchObject({ editorVersion: version,
+      environment: { projectVersion: version, buildSupport: true, installedVersions: expect.arrayContaining([version]) } });
+  }, 15000);
+
   it('parses compiler diagnostics and bounded, completed NUnit XML without external entities', () => {
     expect(unityDiagnostics('Assets/Fault.cs(4,7): error CS0103: missing value')).toEqual([
       { severity: 'error', file: 'Assets/Fault.cs', line: 4, code: 'CS0103', message: 'missing value' },
@@ -88,8 +117,8 @@ describe('Unity Runner controls', () => {
       const proof = storage.execution.createBootstrap().proof;
       const sessionDigest = sha256(storage.execution.exchangeBootstrap(sha256(proof)).proof);
       const runner = storage.execution.registerRunner({ label: 'Fixture', deviceId: 'a'.repeat(64), platform: 'MACOS' });
-      const task = storage.create({ title: 'Unity lock', description: '', targetPlatform: 'BOTH' });
-      const worktree = storage.execution.registerWorktree({ worktreeId: 'b'.repeat(64), repoId: 'c'.repeat(64), root: '/fixture' });
+      const task = storage.create({ title: 'Unity lock', description: '', targetPlatform: 'BOTH' }, legacyProjectId);
+      const worktree = storage.execution.registerWorktree({ worktreeId: 'b'.repeat(64), repoId: 'c'.repeat(64), root: '/fixture' }, legacyProjectId);
       storage.codex.manage(worktree.worktreeId);
       const pending = storage.execution.createRequest({ repoId: worktree.repoId, worktreeId: worktree.worktreeId,
         taskId: task.id, runnerId: runner.id,

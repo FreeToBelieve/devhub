@@ -1,7 +1,7 @@
 import { useState } from 'react';
 import type { SubmitEvent } from 'react';
 import { createTaskSchema, targetPlatformSchema } from '@devhub/contracts';
-import type { TargetPlatform, Task, TaskStatus } from '@devhub/contracts';
+import type { Project, TargetPlatform, Task, TaskStatus } from '@devhub/contracts';
 import { createTask } from './api.js';
 
 const platformLabel: Record<TargetPlatform, string> = {
@@ -56,7 +56,7 @@ export function TaskList({ tasks }: { tasks: Task[] }) {
   </ul>;
 }
 
-export function NewTask({ onCreated }: { onCreated(task: Task): void }) {
+export function NewTask({ project, onCreated }: { project: Project; onCreated(task: Task): void }) {
   const [saving, setSaving] = useState(false);
   const [error, setError] = useState('');
 
@@ -77,7 +77,7 @@ export function NewTask({ onCreated }: { onCreated(task: Task): void }) {
     setError('');
     setSaving(true);
     try {
-      const task = await createTask(result.data);
+      const task = await createTask(result.data, project.id);
       onCreated(task);
     } catch (failure) {
       setError(failure instanceof TypeError
@@ -97,7 +97,7 @@ export function NewTask({ onCreated }: { onCreated(task: Task): void }) {
       <textarea id="description" name="description" rows={6} maxLength={4000} placeholder="写下要做的工作和验收条件" />
 
       <label htmlFor="targetPlatform">目标平台</label>
-      <select id="targetPlatform" name="targetPlatform" defaultValue="BOTH">
+      <select id="targetPlatform" name="targetPlatform" defaultValue={project.targetPlatform}>
         {targetPlatformSchema.options.map((platform) => <option value={platform} key={platform}>{platformLabel[platform]}</option>)}
       </select>
 

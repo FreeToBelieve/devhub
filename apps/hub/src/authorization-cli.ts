@@ -9,7 +9,7 @@ import { inspectWorktree } from './worktree.js';
 const usage = `Usage:
   pnpm authorization bootstrap
   pnpm authorization runner-register <label>
-  pnpm authorization worktree-register <worktree-root>
+  pnpm authorization worktree-register <project-id> <worktree-root>
   pnpm authorization runner-claim <runner-id> <grant-id> <version> <binding-digest> <idempotency-key>`;
 
 async function run(args: string[]) {
@@ -19,7 +19,7 @@ async function run(args: string[]) {
     return;
   }
   const bootstrap = command === 'bootstrap' && args.length === 1;
-  const register = (command === 'runner-register' || command === 'worktree-register') && args.length === 2;
+  const register = (command === 'runner-register' && args.length === 2) || (command === 'worktree-register' && args.length === 3);
   const claim = command === 'runner-claim' && args.length === 6;
   if (!(bootstrap || register || claim)) throw new Error(usage);
   if (bootstrap && (!process.stdin.isTTY || !process.stdout.isTTY)) {
@@ -37,9 +37,10 @@ async function run(args: string[]) {
       const label = z.string().trim().min(1).max(80).parse(first);
       console.log(JSON.stringify(store.execution.registerRunner({ ...localDevice(), label })));
     } else if (command === 'worktree-register') {
-      const worktree = await inspectWorktree(z.string().min(1).parse(first));
-      store.execution.registerWorktree(worktree);
-      console.log(JSON.stringify(worktree));
+      const project = store.projects.require(z.uuid().parse(first), true, true);
+      const worktree = await inspectWorktree(z.string().min(1).parse(rest[0]));
+      if (!worktree.linked) throw new Error('Register a separate linked worktree.');
+      console.log(JSON.stringify(store.execution.registerWorktree(worktree, project.id)));
     } else {
       const runnerId = z.uuid().parse(first);
       const [grantId, version, bindingDigest, idempotencyKey] = rest;

@@ -6,6 +6,8 @@ import type { UnityPlan, UnityStage } from '@devhub/contracts';
 
 export interface UnityWorkerInput {
   id: string;
+  projectId: string;
+  editorVersion: string;
   project: string;
   directory: string;
   editor: string;

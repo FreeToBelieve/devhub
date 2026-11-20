@@ -104,8 +104,16 @@ export async function addDetachedWorktree(repository: string, destination: strin
   await git(repository, ['-c', 'core.hooksPath=' + isolatedConfig, 'worktree', 'add', '--detach', '--', destination, head]);
 }
 
+export async function repositoryRemote(root: string): Promise<string | null> {
+  const remote = (await git(root, ['config', '--local', '--get', 'remote.origin.url'], true)).trim();
+  try {
+    const uri = new URL(remote);
+    return uri.protocol === 'https:' && !uri.username && !uri.password && !uri.search && !uri.hash ? uri.href : null;
+  } catch { return null; }
+}
+
 export async function generatedRoots(root: string, names: readonly string[]) {
-  const paths = await git(root, ['ls-files', '-z', '--', ...names.map((name) => ':(icase,top,literal)' + name)]);
+  const paths = await git(root, ['ls-files', '-z', '--', ...names.map((name) => ':(icase,literal)' + name)]);
   const occupied = new Set(paths.split('\0').map((path) => path.split('/')[0]?.toLowerCase()));
   const patterns = names.map((name) => name + '/');
   const ignored = await git(root, ['check-ignore', '--no-index', '--', ...patterns], true);

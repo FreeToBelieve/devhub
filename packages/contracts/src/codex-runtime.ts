@@ -8,6 +8,7 @@ export const codexDiagnosticSchema = z.enum([
   'WORKER_JOB_UNAVAILABLE', 'WORKER_READY_TIMEOUT',
 ]);
 export const codexRunSchema = z.object({
+  projectId: z.uuid(),
   devhubRunId: z.uuid(),
   requestId: z.uuid(),
   worktreeId: digestSchema,

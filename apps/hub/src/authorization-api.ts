@@ -2,11 +2,12 @@ import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
 import {
   decisionInputSchema, developerNetworkModeSchema, digestSchema, executionBindingSchema, executionPolicyVersion, localProofSchema,
-  requestKeySchema, reviseTaskSchema, taskIdSchema, versionInputSchema,
+  createTaskSchema, legacyProjectId, requestKeySchema, reviseTaskSchema, taskIdSchema, versionInputSchema,
 } from '@devhub/contracts';
 import { allowsLocalOrigin, csrfForSession, sha256, verifyCsrf } from '@devhub/security';
-import { AuthorizationError, taskSpecDigest } from '@devhub/storage';
+import { AuthorizationError, ProjectError, taskSpecDigest } from '@devhub/storage';
 import type { TaskStore } from '@devhub/storage';
+import type { Project } from '@devhub/contracts';
 import { workspaceMatches } from './authorization-context.js';
 import { inspectWorktree } from './worktree.js';
 import { inspectCodexWorktree } from './codex-worktree.js';
@@ -16,6 +17,8 @@ import { registerGitApi } from './git-api.js';
 import { safeGitError } from './git-delivery.js';
 import type { gitDelivery } from './git-delivery.js';
 import { registerUnityApi } from './unity-api.js';
+import { registerProjectApi } from './project-api.js';
+import { projectBinding } from './project-context.js';
 import { unityFailure } from './unity-runtime.js';
 import type { unityRuntime } from './unity-runtime.js';
 
@@ -47,6 +50,8 @@ function errorResponse(reply: FastifyReply, error: unknown) {
       error.code === 'NOT_FOUND' ? 404 : 409;
     return reply.code(status).send({ code: error.code, message: error.code });
   }
+  if (error instanceof ProjectError) return reply.code(error.code === 'PROJECT_NOT_FOUND' || error.code === 'PROJECT_SCOPE_MISMATCH' ? 404 : 409)
+    .send({ code: error.code, message: error.code });
   if (error instanceof Error && /^UNITY_[A-Z0-9_]{1,64}$/.test(error.message)) {
     const code = unityFailure(error);
     return reply.code(code === 'UNITY_RUN_NOT_FOUND' ? 404 : 409).send({ code, message: code });
@@ -68,6 +73,7 @@ export interface AuthorizationRoutes {
   parse: typeof parse;
   input: typeof input;
   key(request: FastifyRequest): string;
+  project(request: FastifyRequest, resourceId?: string): Project;
 }
 
 export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore, port: number, clock: () => number,
@@ -104,6 +110,14 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
   }
 
   const key = (request: FastifyRequest) => parse(requestKeySchema, request.headers['idempotency-key']);
+  function project(request: FastifyRequest, resourceId?: string) {
+    const header = request.headers['x-devhub-project-id'];
+    const query = (request.query as { projectId?: unknown } | undefined)?.projectId;
+    if (header !== undefined && query !== undefined && header !== query) throw new ProjectError('PROJECT_SCOPE_MISMATCH');
+    const selected = parse(z.uuid(), header ?? query ?? resourceId ?? legacyProjectId);
+    if (resourceId && selected !== resourceId) throw new ProjectError('PROJECT_SCOPE_MISMATCH');
+    return tasks.projects.require(selected);
+  }
   const setCookie = (reply: FastifyReply, proof: string, maxAge: number) =>
     reply.header('Set-Cookie', `${cookieName}=${proof}; Path=/api; HttpOnly; SameSite=Strict; Max-Age=${maxAge}`);
 
@@ -122,30 +136,51 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     return setCookie(reply, '', 0).code(204).send();
   });
 
+  route('GET', '/api/tasks', (request) => {
+    session(request);
+    return { tasks: tasks.list(project(request).id) };
+  });
+  route('GET', '/api/tasks/:id', (request) => {
+    session(request);
+    const task = tasks.get(parse(taskIdSchema, request.params.id), project(request).id);
+    if (!task) throw new AuthorizationError('NOT_FOUND');
+    return task;
+  });
+  route('POST', '/api/tasks', (request, reply) => {
+    session(request, true);
+    const { projectId, ...spec } = input(request, createTaskSchema.extend({ projectId: z.uuid() }));
+    const selected = project(request, projectId);
+    tasks.projects.require(selected.id, true, true);
+    const task = tasks.create(spec, selected.id);
+    return reply.code(201).header('Location', '/api/tasks/' + task.id + '?projectId=' + task.projectId).send(task);
+  });
   route('PUT', '/api/tasks/:id/spec', (request) => {
     session(request, true);
     const id = parse(taskIdSchema, request.params.id);
     const { expectedRevision, ...spec } = input(request, reviseTaskSchema);
-    const task = tasks.revise(id, expectedRevision, spec);
-    if (!task) throw new AuthorizationError(tasks.get(id) ? 'VERSION_CONFLICT' : 'NOT_FOUND');
+    const selected = project(request).id;
+    const task = tasks.revise(id, expectedRevision, spec, selected);
+    if (!task) throw new AuthorizationError(tasks.get(id, selected) ? 'VERSION_CONFLICT' : 'NOT_FOUND');
     return task;
   });
   route('GET', '/api/authorization/catalog', (request) => {
     session(request);
-    const catalog = execution.catalog();
+    const selected = project(request).id;
+    const catalog = execution.catalog(selected);
     return {
       ...catalog, policyVersion: executionPolicyVersion,
       worktrees: catalog.worktrees.map((tree) => ({ ...tree, codexManaged: tasks.codex.manages(tree.worktreeId) })),
-      tasks: tasks.list().map((task) => ({ ...task, taskSpecSha256: taskSpecDigest(task) })),
+      tasks: tasks.list(selected).map((task) => ({ ...task, taskSpecSha256: taskSpecDigest(task) })),
     };
   });
   route('GET', '/api/authorization/worktrees/:id', async (request) => {
     session(request);
-    const worktree = execution.getWorktree(parse(digestSchema, request.params.id));
+    const selected = project(request);
+    const worktree = execution.getWorktree(parse(digestSchema, request.params.id), selected.id);
     if (!worktree) throw new AuthorizationError('NOT_FOUND');
     const { network } = parse(z.object({ network: developerNetworkModeSchema.default('OFF') }), request.query);
     const inspection = tasks.codex.manages(worktree.worktreeId)
-      ? inspectCodexWorktree(worktree.root, network)
+      ? inspectCodexWorktree(worktree.root, network, false, undefined, selected)
       : inspectWorktree(worktree.root);
     const live = await inspection.catch((error: unknown) => {
       if (error instanceof Error && ['WORKSPACE_SECRET_DETECTED', 'WORKSPACE_SECRET_SCAN_LIMIT',
@@ -157,16 +192,24 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
   });
   route('GET', '/api/execution-requests', (request) => {
     session(request);
-    return { requests: execution.requests() };
+    return { requests: execution.requests(project(request).id) };
   });
   route('GET', '/api/execution-requests/:id', (request) => {
     session(request);
-    return execution.detail(parse(taskIdSchema, request.params.id));
+    const id = parse(taskIdSchema, request.params.id);
+    if (execution.getRequest(id)?.projectId !== project(request).id) throw new AuthorizationError('NOT_FOUND');
+    return execution.detail(id);
   });
   route('POST', '/api/execution-requests', async (request, reply) => {
     const actor = session(request, true);
     const idempotencyKey = key(request);
-    const binding = input(request, executionBindingSchema);
+    const submitted = input(request, executionBindingSchema);
+    const selected = project(request, submitted.projectId);
+    if (!tasks.get(submitted.taskId, selected.id) || !execution.getWorktree(submitted.worktreeId, selected.id)) {
+      throw new AuthorizationError('NOT_FOUND');
+    }
+    if (selected.repositoryRoot && submitted.scope.operation !== 'codex.turn') throw new AuthorizationError('FORBIDDEN');
+    const binding = { ...submitted, ...(selected.repositoryRoot ? projectBinding(selected) : {}) };
     if (binding.scope.operation === 'workspace.write') binding.scope.paths = [...new Set(binding.scope.paths)].sort();
     if (binding.scope.operation === 'codex.turn' &&
         (!tasks.codex.manages(binding.worktreeId) || !binding.scope.executionProfile || !binding.scope.networkMode)) {
@@ -182,6 +225,7 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     const idempotencyKey = key(request);
     const { decision, expectedVersion } = input(request, decisionInputSchema);
     const pending = execution.getRequest(requestId);
+    if (pending?.projectId !== project(request).id) throw new AuthorizationError('NOT_FOUND');
     const matches = decision === 'approve' && pending ? await workspaceMatches(execution, pending.binding) : false;
     return execution.mutate({
       kind: decision, requestId, expectedVersion, sessionDigest: actor.digest, idempotencyKey, workspaceMatches: matches,
@@ -190,6 +234,7 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
   route('POST', '/api/execution-requests/:id/revoke', (request) => {
     const actor = session(request, true);
     const requestId = parse(taskIdSchema, request.params.id);
+    if (execution.getRequest(requestId)?.projectId !== project(request).id) throw new AuthorizationError('NOT_FOUND');
     const { expectedVersion } = input(request, versionInputSchema);
     return execution.mutate({
       kind: 'revoke', requestId, expectedVersion, sessionDigest: actor.digest, idempotencyKey: key(request), workspaceMatches: false,
@@ -197,21 +242,25 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
   });
   route('GET', '/api/codex-runs', (request) => {
     session(request);
-    return { runs: tasks.codex.list() };
+    return { runs: tasks.codex.list(project(request).id) };
   });
   route('GET', '/api/codex-runs/:id/events', (request) => {
     session(request);
     const id = parse(taskIdSchema, request.params.id);
     const query = parse(z.object({ after: z.coerce.number().int().nonnegative().default(0) }), request.query);
-    const run = tasks.codex.get(id);
+    const run = tasks.codex.get(id, project(request).id);
     if (!run) throw new AuthorizationError('NOT_FOUND');
     return { run, events: tasks.codex.events(id, query.after) };
   });
   route('POST', '/api/codex-runs/:id/cancel', (request, reply) => {
     session(request, true);
-    if (!tasks.codex.requestCancel(parse(taskIdSchema, request.params.id))) throw new AuthorizationError('STATE_CONFLICT');
+    const id = parse(taskIdSchema, request.params.id);
+    if (!tasks.codex.get(id, project(request).id)) throw new AuthorizationError('NOT_FOUND');
+    if (!tasks.codex.requestCancel(id)) throw new AuthorizationError('STATE_CONFLICT');
     return reply.code(204).send();
   });
-  registerGitApi({ route, session, parse, input, key }, tasks, git, codexWorktreeRoot);
-  registerUnityApi({ route, session, parse, input, key }, tasks, unity);
+  const routes = { route, session, parse, input, key, project };
+  registerProjectApi(routes, tasks, codexWorktreeRoot);
+  registerGitApi(routes, tasks, git, codexWorktreeRoot);
+  registerUnityApi(routes, tasks, unity);
 }

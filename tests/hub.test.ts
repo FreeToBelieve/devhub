@@ -3,21 +3,44 @@ import { mkdtempDisposableSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createServer } from '@devhub/hub';
+import { openTaskStore } from '../packages/storage/dist/index.js';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 const port = 4317;
 const host = `127.0.0.1:${port}`;
-const headers = { host };
+const origin = 'http://' + host;
+const headers = { host, origin };
 const input = { title: ' 青溪地图 ', description: " O'Brien 的双端说明 ", targetPlatform: 'BOTH' };
 
-describe('Hub API', () => {
-  let app: ReturnType<typeof createServer>;
+async function createFixture(databasePath: string) {
+  const store = openTaskStore(databasePath, true);
+  const project = store.projects.create({ name: 'Fixture', repositoryRoot: join(tmpdir(), 'fixture-repository'),
+    repoId: 'a'.repeat(64), unityProjectPath: '.', unityVersion: '6000.3.28f1', targetPlatform: 'BOTH',
+    settings: { description: '', gameType: '', documents: [] } });
+  const proof = store.execution.createBootstrap().proof;
+  store.close();
+  const app = createServer({ port, databasePath, managedDataDirectory: true });
+  const login = await app.inject({ method: 'POST', url: '/api/operator/session', headers, payload: { bootstrapCredential: proof } });
+  expect(login.statusCode).toBe(200);
+  const credentials = { ...headers, 'x-devhub-project-id': project.id, 'x-csrf-token': login.json().csrfToken as string,
+    cookie: String(login.headers['set-cookie']).split(';')[0]! };
+  return { app, credentials, projectId: project.id };
+}
 
-  beforeEach(() => {
-    app = createServer({ port, databasePath: ':memory:' });
-  });
+describe('Hub API', () => {
+  let fixture: ReturnType<typeof mkdtempDisposableSync>;
+  let app: ReturnType<typeof createServer>;
+  let authenticated: Awaited<ReturnType<typeof createFixture>>['credentials'];
+  let projectId: string;
+
+  beforeEach(async () => {
+    fixture = mkdtempDisposableSync(join(tmpdir(), 'devhub-http-'));
+    const ready = await createFixture(join(fixture.path, 'data', 'tasks.sqlite'));
+    ({ app, credentials: authenticated, projectId } = ready);
+  }, 15000);
   afterEach(async () => {
     await app.close();
+    fixture.remove();
   });
 
   it('returns health, an empty list and environment checks', async () => {
@@ -26,7 +49,7 @@ describe('Hub API', () => {
     expect(health.json()).toEqual({ status: 'ok' });
     expect(health.headers['cache-control']).toBe('no-store');
 
-    const list = await app.inject({ url: '/api/tasks', headers });
+    const list = await app.inject({ url: '/api/tasks', headers: authenticated });
     expect(list.json()).toEqual({ tasks: [] });
 
     const doctor = await app.inject({ url: '/api/doctor', headers });
@@ -39,17 +62,17 @@ describe('Hub API', () => {
     const response = await app.inject({
       method: 'POST',
       url: '/api/tasks',
-      headers: { host, origin: `http://${host}` },
-      payload: input,
+      headers: authenticated,
+      payload: { ...input, projectId },
     });
     expect(response.statusCode).toBe(201);
     const task = response.json();
     expect(task).toMatchObject({
       title: '青溪地图', description: "O'Brien 的双端说明", targetPlatform: 'BOTH', status: 'CREATED',
     });
-    expect(response.headers.location).toBe(`/api/tasks/${task.id}`);
+    expect(response.headers.location).toBe(`/api/tasks/${task.id}?projectId=${projectId}`);
 
-    const detail = await app.inject({ url: `/api/tasks/${task.id}`, headers });
+    const detail = await app.inject({ url: `/api/tasks/${task.id}`, headers: authenticated });
     expect(detail.json()).toEqual(task);
   });
 
@@ -59,16 +82,16 @@ describe('Hub API', () => {
     { ...input, description: 'x'.repeat(4001) },
     { ...input, status: 'RUNNING' },
   ])('rejects invalid task data without creating a record', async (payload) => {
-    const response = await app.inject({ method: 'POST', url: '/api/tasks', headers, payload });
+    const response = await app.inject({ method: 'POST', url: '/api/tasks', headers: authenticated, payload: { ...payload, projectId } });
     expect(response.statusCode).toBe(400);
-    expect(response.json().code).toBe('INVALID_TASK');
-    const list = await app.inject({ url: '/api/tasks', headers });
+    expect(response.json().code).toBe('INVALID_AUTHORIZATION_INPUT');
+    const list = await app.inject({ url: '/api/tasks', headers: authenticated });
     expect(list.json().tasks).toEqual([]);
   });
 
   it('rejects invalid and unknown task IDs', async () => {
-    const invalid = await app.inject({ url: '/api/tasks/not-a-uuid', headers });
-    const unknown = await app.inject({ url: `/api/tasks/${randomUUID()}`, headers });
+    const invalid = await app.inject({ url: '/api/tasks/not-a-uuid', headers: authenticated });
+    const unknown = await app.inject({ url: `/api/tasks/${randomUUID()}`, headers: authenticated });
     expect(invalid.statusCode).toBe(400);
     expect(unknown.statusCode).toBe(404);
   });
@@ -83,15 +106,15 @@ describe('Hub API', () => {
     expect(rebound.statusCode).toBe(403);
     expect(crossOrigin.statusCode).toBe(403);
     expect(crossOrigin.headers['access-control-allow-origin']).toBeUndefined();
-    expect((await app.inject({ url: '/api/tasks', headers })).json()).toEqual({ tasks: [] });
+    expect((await app.inject({ url: '/api/tasks', headers: authenticated })).json()).toEqual({ tasks: [] });
   });
 
   it('requires JSON and limits request size', async () => {
     const text = await app.inject({
-      method: 'POST', url: '/api/tasks', headers: { host, 'content-type': 'text/plain' }, payload: JSON.stringify(input),
+      method: 'POST', url: '/api/tasks', headers: { ...authenticated, 'content-type': 'text/plain' }, payload: JSON.stringify(input),
     });
     const oversized = await app.inject({
-      method: 'POST', url: '/api/tasks', headers, payload: { ...input, description: 'x'.repeat(33 * 1024) },
+      method: 'POST', url: '/api/tasks', headers: authenticated, payload: { ...input, projectId, description: 'x'.repeat(33 * 1024) },
     });
     expect(text.statusCode).toBe(415);
     expect(oversized.statusCode).toBe(413);
@@ -101,10 +124,10 @@ describe('Hub API', () => {
 it('persists task fields in a SQLite file and opens it again after Hub shutdown', async () => {
   using directory = mkdtempDisposableSync(join(tmpdir(), 'devhub-'));
   const databasePath = join(directory.path, '本机 数据', 'tasks.sqlite');
-  const first = createServer({ port, databasePath, managedDataDirectory: true });
+  const { app: first, credentials, projectId } = await createFixture(databasePath);
   const recorded = await (async () => {
     try {
-      const response = await first.inject({ method: 'POST', url: '/api/tasks', headers, payload: input });
+      const response = await first.inject({ method: 'POST', url: '/api/tasks', headers: credentials, payload: { ...input, projectId } });
       expect(response.statusCode).toBe(201);
       return response.json();
     } finally {
@@ -114,7 +137,7 @@ it('persists task fields in a SQLite file and opens it again after Hub shutdown'
 
   const second = createServer({ port, databasePath, managedDataDirectory: true });
   try {
-    const list = await second.inject({ url: '/api/tasks', headers });
+    const list = await second.inject({ url: '/api/tasks', headers: credentials });
     expect(list.json()).toEqual({ tasks: [recorded] });
   } finally {
     await second.close();

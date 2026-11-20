@@ -6,7 +6,7 @@ import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
 import { fileURLToPath } from 'node:url';
-import { executionPolicyVersion, unityVersion } from '../packages/contracts/dist/index.js';
+import { executionPolicyVersion, legacyProjectId, legacyUnityEditorVersion as unityVersion } from '../packages/contracts/dist/index.js';
 import { openTaskStore, taskSpecDigest } from '../packages/storage/dist/index.js';
 import { sha256 } from '../packages/security/dist/index.js';
 import { createCodexWorktree, inspectCodexWorktree } from '../apps/hub/dist/codex-worktree.js';
@@ -103,13 +103,13 @@ try {
   await initializeUnityArtifactRoot(artifactRoot, !process.env.DEVHUB_UNITY_SMOKE_ARTIFACTS);
   async function newTree() {
     const tree = await createCodexWorktree(source, join(root, 'worktrees'));
-    store.execution.registerWorktree(tree);
+    store.execution.registerWorktree(tree, legacyProjectId);
     store.codex.manage(tree.worktreeId);
     return tree;
   }
   const tree = await newTree();
   const runner = store.execution.registerRunner({ ...localDevice(), label: 'Unity native smoke test' });
-  const task = store.create({ title: 'Isolated Unity automation', description: 'Temporary fixture only', targetPlatform: 'BOTH' });
+  const task = store.create({ title: 'Isolated Unity automation', description: 'Temporary fixture only', targetPlatform: 'BOTH' }, legacyProjectId);
   const session = sha256(store.execution.exchangeBootstrap(sha256(store.execution.createBootstrap().proof)).proof);
   async function launch(plan, workspace = tree) {
     const request = await service.request({ taskId: task.id, runnerId: runner.id, worktreeId: workspace.worktreeId, plan }, session, randomUUID());
@@ -244,7 +244,7 @@ try {
         async updatePullRequest(number, text) { assert.equal(number, 8); change = { ...change, ...text, headSha: refs.get(branch) }; return change; } }),
       transfer: async ({ operation }) => { assert.equal(operation.kind, 'push'); refs.set(operation.branch, operation.sha); },
     });
-    const projectId = randomUUID();
+    const projectId = legacyProjectId;
     await delivery.connect({ projectId, provider: 'github', repositoryUrl: simulatedUrl, token: 'synthetic-unity-delivery-fixture' }, 0, session);
     const { operation } = await delivery.preview(projectId, { taskId: task.id, worktreeId: tree.worktreeId, branch,
       title: 'Fix isolated Unity damage rules', description: 'Verified Unity run ' + passed.id,

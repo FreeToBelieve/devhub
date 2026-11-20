@@ -8,40 +8,40 @@ import type { unityRuntime } from './unity-runtime.js';
 
 const requestSchema = z.strictObject({ taskId: z.uuid(), runnerId: z.uuid(), worktreeId: digestSchema, plan: unityPlanSchema });
 export function registerUnityApi(routes: AuthorizationRoutes, tasks: TaskStore, unity: ReturnType<typeof unityRuntime>) {
-  const { route, session, input, parse, key } = routes;
+  const { route, session, input, parse, key, project } = routes;
   route('GET', '/api/unity/environment', (request) => {
     session(request);
-    const { worktreeId } = parse(z.strictObject({ worktreeId: digestSchema.optional() }), request.query);
-    return unity.environment(worktreeId);
+    const { worktreeId } = parse(z.strictObject({ worktreeId: digestSchema.optional(), projectId: z.uuid().optional() }), request.query);
+    return unity.environment(worktreeId, project(request).id);
   });
   route('GET', '/api/unity/runs', (request) => {
     session(request);
-    return { runs: tasks.unity.list() };
+    return { runs: tasks.unity.list(project(request).id) };
   });
   route('POST', '/api/unity/requests', (request) => {
     const actor = session(request, true);
-    return unity.request(input(request, requestSchema), actor.digest, key(request));
+    return unity.request(input(request, requestSchema), actor.digest, key(request), project(request).id);
   });
   route('POST', '/api/unity/runs', async (request, reply) => {
     session(request, true);
-    const { run, completion } = await unity.start(input(request, runnerClaimInputSchema));
+    const { run, completion } = await unity.start(input(request, runnerClaimInputSchema), project(request).id);
     void completion.catch(() => request.log.error({ code: 'UNITY_RUNTIME_STATE_UNAVAILABLE' }, 'Unity runtime failed to finalize'));
     return reply.code(202).send(run);
   });
   route('POST', '/api/unity/runs/:id/cancel', (request, reply) => {
     session(request, true);
-    if (!unity.cancel(parse(z.uuid(), request.params.id))) throw new UnityStateError('UNITY_RUN_NOT_FOUND');
+    if (!unity.cancel(parse(z.uuid(), request.params.id), project(request).id)) throw new UnityStateError('UNITY_RUN_NOT_FOUND');
     return reply.code(204).send();
   });
   route('POST', '/api/unity/runs/:id/repair', (request) => {
     const actor = session(request, true);
     const payload = input(request, z.strictObject({ previousRunId: z.uuid(), notes: z.string().max(1500).optional() }));
-    return unity.requestRepair({ ...payload, runId: parse(z.uuid(), request.params.id) }, actor.digest, key(request));
+    return unity.requestRepair({ ...payload, runId: parse(z.uuid(), request.params.id) }, actor.digest, key(request), project(request).id);
   });
   route('GET', '/api/unity/runs/:id/artifact', async (request, reply) => {
     session(request);
-    const run = tasks.unity.get(parse(z.uuid(), request.params.id));
-    const { name } = parse(z.strictObject({ name: z.string().max(100) }), request.query);
+    const run = tasks.unity.get(parse(z.uuid(), request.params.id), project(request).id);
+    const { name } = parse(z.strictObject({ name: z.string().max(100), projectId: z.uuid().optional() }), request.query);
     const artifact = run?.artifacts.find((item) => item.name === name);
     if (!run || !artifact || !run.exitConfirmed) throw new UnityStateError('UNITY_RUN_NOT_FOUND');
     const file = await readArtifact(unity.artifacts, run.id, name).catch(() => undefined);

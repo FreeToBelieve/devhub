@@ -1,3 +1,4 @@
+import { legacyProjectId } from '../packages/contracts/dist/index.js';
 import { execFileSync } from 'node:child_process';
 import { createHash, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempDisposableSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
@@ -188,7 +189,7 @@ describe('system credential cleanup', () => {
       provider: () => provider,
       transfer: noOperation,
     };
-    const projectId = randomUUID();
+    const projectId = legacyProjectId;
     const input = { projectId, provider: 'github' as const,
       repositoryUrl: 'https://github.com/fixture-owner/isolated-fixture', token: credential };
     {

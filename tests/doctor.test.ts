@@ -43,7 +43,7 @@ it('finds the standard macOS Unity executable', async () => {
     env: {},
     files: {
       isExecutable: (filename) => filename === '/Applications/Unity/Hub/Editor/6000.3.28f1/Unity.app/Contents/MacOS/Unity',
-      readDirectory: () => [],
+      readDirectory: () => ['6000.3.28f1'],
       readText: () => { throw new Error('No configured project'); },
     },
   });
@@ -57,14 +57,14 @@ it('warns when macOS has a different Unity version and fails on the wrong Node m
     nodeVersion: '22.0.0',
     nodeLts: true,
     readOperatingSystem: async () => ({ version: '14.5' }),
-    env: { PATH: '/usr/local/bin:/usr/bin' },
+    env: { PATH: '/usr/local/bin:/usr/bin', DEVHUB_UNITY_PROJECT: '/fixture/Unity' },
     files: {
       isExecutable: (filename) => [
         '/usr/local/bin/pnpm', '/usr/bin/git',
         '/Applications/Unity/Hub/Editor/6000.4.0f1/Unity.app/Contents/MacOS/Unity',
       ].includes(filename),
       readDirectory: () => ['6000.4.0f1', 'not-an-editor'],
-      readText: () => { throw new Error('No configured project'); },
+      readText: () => 'm_EditorVersion: 6000.3.28f1\n',
     },
   });
   expect(report.checks).toContainEqual(expect.objectContaining({ id: 'node', status: 'fail' }));

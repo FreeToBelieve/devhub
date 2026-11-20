@@ -6,7 +6,7 @@ import {
 import type {
   CodexRun, ExecutionRequest, RunnerRecord, Task, UnityEnvironment, UnityRun, UnityStage, WorktreeRecord,
 } from '@devhub/contracts';
-import { request } from './api.js';
+import { scopedRequest } from './api.js';
 
 const stages: Record<UnityStage, string> = {
   EDITOR: '启动并检查 Editor', IMPORT: '导入与编译', EDITMODE: 'EditMode 测试', PLAYMODE: 'PlayMode 测试',
@@ -18,7 +18,8 @@ const identity = <T,>() => ({ parse: (value: unknown) => value as T });
 const decoded = (value: unknown) => ({ runs: (value as { runs: unknown[] }).runs.map((run) => unityRunSchema.parse(run)) });
 type Catalog = { tasks: Task[]; runners: RunnerRecord[]; worktrees: (WorktreeRecord & { codexManaged: boolean })[] };
 
-export function UnityRuntime() {
+export function UnityRuntime({ projectId }: { projectId: string }) {
+  const request = scopedRequest(projectId);
   const [csrf, setCsrf] = useState('');
   const [catalog, setCatalog] = useState<Catalog>();
   const [worktreeId, setWorktreeId] = useState('');
@@ -132,6 +133,8 @@ export function UnityRuntime() {
         <dt>图形会话</dt><dd>{environment.graphics ? '可用' : '不可用'}</dd>
         <dt>工作树</dt><dd>{environment.projectLocked ? '锁定' : '空闲'}</dd>
         <dt>可用磁盘</dt><dd>{environment.freeBytes === null ? '未知' : (environment.freeBytes / 1024 ** 3).toFixed(1) + ' GiB'}</dd>
+        <dt>已检测版本</dt><dd>{environment.installedVersions.join(' · ') || '无'}</dd>
+        {environment.diagnostics.length > 0 && <><dt>诊断</dt><dd><code>{environment.diagnostics.join(' · ')}</code></dd></>}
       </dl>}
     </section>
     <section className="panel">
@@ -189,7 +192,7 @@ export function UnityRuntime() {
           {report.scene && <p>{report.scene.path} · 帧 {report.scene.frames} · {report.scene.skillTriggered ? '技能已触发' : '技能未触发'}</p>}
         </div>)}
         {run.exitConfirmed && run.artifacts.map((artifact) => {
-          const url = '/api/unity/runs/' + run.id + '/artifact?name=' + encodeURIComponent(artifact.name);
+          const url = '/api/unity/runs/' + run.id + '/artifact?name=' + encodeURIComponent(artifact.name) + '&projectId=' + encodeURIComponent(projectId);
           if (artifact.mime === 'image/png') return <figure key={artifact.name}>
             <img src={url} alt={artifact.kind === 'editor-screenshot' ? 'Unity Editor Game View' : '独立 Player'} loading="lazy" />
             <figcaption>{artifact.kind === 'editor-screenshot' ? 'Editor Game View' : '独立 Player'}</figcaption></figure>;

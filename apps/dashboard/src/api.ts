@@ -1,4 +1,4 @@
-import { apiErrorSchema, doctorReportSchema, taskListSchema, taskSchema } from '@devhub/contracts';
+import { apiErrorSchema, doctorReportSchema, operatorSessionSchema, taskListSchema, taskSchema } from '@devhub/contracts';
 import type { CreateTask } from '@devhub/contracts';
 
 export async function request<T>(
@@ -15,10 +15,20 @@ export async function request<T>(
   return schema.parse(data);
 }
 
-export const listTasks = (signal: AbortSignal) => request('/api/tasks', taskListSchema, { signal });
+export function scopedRequest(projectId: string): typeof request {
+  return (path, schema, options) => {
+    const headers = new Headers(options?.headers);
+    headers.set('X-DevHub-Project-Id', projectId);
+    return request(path, schema, { ...options, headers });
+  };
+}
+
+export const listTasks = (projectId: string, signal: AbortSignal) => scopedRequest(projectId)('/api/tasks', taskListSchema, { signal });
 export const getDoctorReport = (signal: AbortSignal) => request('/api/doctor', doctorReportSchema, { signal });
-export const createTask = (input: CreateTask) => request('/api/tasks', taskSchema, {
-  method: 'POST',
-  headers: { 'Content-Type': 'application/json' },
-  body: JSON.stringify(input),
-});
+export async function createTask(input: CreateTask, projectId: string) {
+  const { csrfToken } = await request('/api/operator/session', operatorSessionSchema);
+  return scopedRequest(projectId)('/api/tasks', taskSchema, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-CSRF-Token': csrfToken },
+    body: JSON.stringify({ ...input, projectId }),
+  });
+}

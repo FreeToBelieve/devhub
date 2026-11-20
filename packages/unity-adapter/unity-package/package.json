@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "displayName": "DevHub Unity Automation",
   "description": "Explicit Unity Editor and runtime entry points for approved DevHub runs.",
-  "unity": "6000.3",
+  "unity": "2022.3",
   "dependencies": {
     "com.unity.modules.screencapture": "1.0.0",
     "com.unity.modules.imageconversion": "1.0.0",

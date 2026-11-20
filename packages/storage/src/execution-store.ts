@@ -1,13 +1,15 @@
 import { randomUUID } from 'node:crypto';
 import type { DatabaseSync } from 'node:sqlite';
 import {
-  executionAuditEventSchema, executionBindingSchema, executionPolicyVersion, executionRequestSchema, runnerRecordSchema, worktreeRecordSchema,
+  executionAuditEventSchema, executionBindingSchema, executionPolicyVersion, executionRequestSchema, legacyProjectId, runnerRecordSchema, worktreeRecordSchema,
 } from '@devhub/contracts';
 import type {
   ExecutionBinding, ExecutionRequest, ExecutionState, RunnerClaimInput, RunnerRecord, Task, WorktreeRecord,
 } from '@devhub/contracts';
 import { generateLocalProof, sha256 } from '@devhub/security';
 import { immediate } from './migrations.js';
+import { ProjectError, projectContextDigest } from './project-store.js';
+import type { ProjectStore } from './project-store.js';
 
 const minute = 60_000;
 const operatorId = 'local-operator';
@@ -41,10 +43,11 @@ type RunnerMutation = RunnerClaimInput & {
 };
 type Actor = { kind: 'operator' | 'runner' | 'system'; id: string };
 
-export function createExecutionStore(database: DatabaseSync, getTask: (id: string) => Task | undefined, clock: () => number) {
+export function createExecutionStore(database: DatabaseSync, getTask: (id: string) => Task | undefined, clock: () => number,
+  projects: ProjectStore) {
   const sql = (statement: string) => database.prepare(statement);
   const requestColumns = `
-    SELECT r.id, r.binding_json AS bindingJson, r.binding_digest AS bindingDigest, r.status,
+    SELECT r.id, r.project_id AS projectId, r.binding_json AS bindingJson, r.binding_digest AS bindingDigest, r.status,
       r.version, r.created_at AS createdAt, r.expires_at AS expiresAt,
       g.id AS grantId, g.expires_at AS grantExpiresAt
     FROM execution_requests r LEFT JOIN execution_grants g ON g.request_id = r.id
@@ -70,9 +73,9 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
     return row && runnerRecordSchema.parse(row);
   }
 
-  function getWorktree(id: string) {
-    const row = sql('SELECT worktree_id AS worktreeId, repo_id AS repoId, root FROM authorization_worktrees WHERE worktree_id = ?').get(id);
-    return row && worktreeRecordSchema.parse(row);
+  function getWorktree(id: string, projectId?: string) {
+    const row = sql('SELECT worktree_id AS worktreeId, repo_id AS repoId, root, project_id AS projectId FROM authorization_worktrees WHERE worktree_id = ?').get(id);
+    return row && (projectId === undefined || row.projectId === projectId) ? worktreeRecordSchema.parse(row) : undefined;
   }
 
   function requireSession(digest: string, now: number) {
@@ -108,11 +111,17 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
     return request;
   }
 
-  function matchesBinding(binding: ExecutionBinding, workspaceMatches: boolean): boolean {
+  function matchesBinding(binding: ExecutionBinding, workspaceMatches: boolean, projectId: string): boolean {
     const task = getTask(binding.taskId);
     const runner = getRunner(binding.runnerId);
     const worktree = getWorktree(binding.worktreeId);
-    return workspaceMatches && binding.policyVersion === executionPolicyVersion &&
+    const project = projects.get(projectId);
+    return workspaceMatches && binding.policyVersion === executionPolicyVersion && project?.status === 'ACTIVE' &&
+      (project.targetPlatform === 'BOTH' || project.targetPlatform === binding.platform) &&
+      (!binding.projectId || binding.projectId === projectId) &&
+      (project.repositoryRoot ? binding.projectContextSha256 === projectContextDigest(project) && project.repoId === binding.repoId :
+        !sql('SELECT 1 FROM projects WHERE repo_id=?').get(binding.repoId)) &&
+      task?.projectId === projectId && worktree?.projectId === projectId &&
       task !== undefined && task.revision === binding.taskRevision && taskSpecDigest(task) === binding.taskSpecSha256 &&
       (task.targetPlatform === 'BOTH' || task.targetPlatform === binding.platform) &&
       runner?.platform === binding.platform && worktree?.repoId === binding.repoId;
@@ -171,7 +180,7 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
 
       if (change.kind === 'approve' || change.kind === 'claim') {
         if (change.kind === 'claim' && request.bindingDigest !== change.bindingDigest) return new AuthorizationError('STALE_CONTEXT');
-        if (!matchesBinding(request.binding, change.workspaceMatches)) {
+        if (!matchesBinding(request.binding, change.workspaceMatches, request.projectId)) {
           invalidate(request, 'REVOKED', now, 'CONTEXT_CHANGED');
           return new AuthorizationError('STALE_CONTEXT');
         }
@@ -250,20 +259,29 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
         return proof;
       });
     },
-    registerWorktree(record: WorktreeRecord) {
-      sql('INSERT OR IGNORE INTO authorization_worktrees (worktree_id, repo_id, root) VALUES (?, ?, ?)')
-        .run(record.worktreeId, record.repoId, record.root);
-      return record;
+    registerWorktree(record: WorktreeRecord, projectId: string) {
+      return immediate(database, () => {
+        const project = projects.require(projectId, true);
+        if (project.repoId && record.repoId !== project.repoId) throw new ProjectError('PROJECT_SCOPE_MISMATCH');
+        const prior = getWorktree(record.worktreeId);
+        if (prior && (prior.projectId !== projectId || prior.repoId !== record.repoId || prior.root !== record.root)) {
+          throw new ProjectError('PROJECT_SCOPE_MISMATCH');
+        }
+        sql('INSERT OR IGNORE INTO authorization_worktrees (worktree_id, repo_id, root, project_id) VALUES (?, ?, ?, ?)')
+          .run(record.worktreeId, record.repoId, record.root, projectId);
+        return { ...record, projectId };
+      });
     },
-    catalog() {
+    catalog(projectId = legacyProjectId) {
       return {
         runners: sql('SELECT id, device_id AS deviceId, platform, label FROM authorization_runners ORDER BY label, id')
           .all().map((row) => runnerRecordSchema.parse(row)),
-        worktrees: sql('SELECT worktree_id AS worktreeId, repo_id AS repoId, root FROM authorization_worktrees ORDER BY root')
-          .all().map((row) => worktreeRecordSchema.parse(row)),
+        worktrees: sql('SELECT worktree_id AS worktreeId, repo_id AS repoId, root, project_id AS projectId FROM authorization_worktrees WHERE project_id=? ORDER BY root')
+          .all(projectId).map((row) => worktreeRecordSchema.parse(row)),
       };
     },
     getWorktree,
+    getProject: projects.get,
     getRequest,
     getByGrant,
     invalidateTaskInTransaction(taskId: string) {
@@ -280,23 +298,29 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
       return immediate(database, () => {
         const now = clock();
         requireSession(sessionDigest, now);
+        const projectId = binding.projectId ?? getTask(binding.taskId)?.projectId ?? legacyProjectId;
         const actor: Actor = { kind: 'operator', id: operatorId };
         const retry = lookupKey(actor, 'create', idempotencyKey, digest);
         if (retry) return expire(getRequest(retry)!, now);
-        if (!matchesBinding(binding, workspaceMatches)) throw new AuthorizationError('STALE_CONTEXT');
+        if (!matchesBinding(binding, workspaceMatches, projectId)) throw new AuthorizationError('STALE_CONTEXT');
+        if (binding.scope.operation === 'codex.turn' && binding.scope.mode === 'resume' &&
+            !sql('SELECT 1 FROM codex_runs WHERE id=? AND project_id=? AND worktree_id=? AND thread_id=?')
+              .get(binding.scope.previousRunId, projectId, binding.worktreeId, binding.codexThreadId)) {
+          throw new AuthorizationError('STALE_CONTEXT');
+        }
         const id = randomUUID();
-        sql(`INSERT INTO execution_requests (id, task_id, runner_id, worktree_id, binding_json, binding_digest, status, version, created_at, expires_at)
-          VALUES (?, ?, ?, ?, ?, ?, 'PENDING', 1, ?, ?)`)
-          .run(id, binding.taskId, binding.runnerId, binding.worktreeId, JSON.stringify(binding), digest, now, now + 10 * minute);
+        sql(`INSERT INTO execution_requests (id, task_id, runner_id, worktree_id, binding_json, binding_digest, status, version, created_at, expires_at, project_id)
+          VALUES (?, ?, ?, ?, ?, ?, 'PENDING', 1, ?, ?, ?)`)
+          .run(id, binding.taskId, binding.runnerId, binding.worktreeId, JSON.stringify(binding), digest, now, now + 10 * minute, projectId);
         const request = getRequest(id)!;
         audit(request, 'PENDING', actor, now);
         rememberKey(actor, 'create', idempotencyKey, digest, id);
         return request;
       });
     },
-    requests() {
+    requests(projectId = legacyProjectId) {
       return immediate(database, () => {
-        const rows = sql(requestColumns + ' ORDER BY r.created_at DESC, r.rowid DESC').all();
+        const rows = sql(requestColumns + ' WHERE r.project_id=? ORDER BY r.created_at DESC, r.rowid DESC').all(projectId);
         const now = clock();
         return rows.map((row) => expire(decode(row)!, now));
       });
