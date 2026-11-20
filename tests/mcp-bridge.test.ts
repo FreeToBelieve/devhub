@@ -187,6 +187,10 @@ describe('MCP Bridge', () => {
     await f.restart();
     await connect();
     expect((await client.listTools()).tools).toHaveLength(31);
+    expect(await client.ping()).toEqual({});
+    f.store.mcp.revoke(pair.pairing.id);
+    await expect(client.ping()).rejects.toThrow('MCP_PAIRING_INACTIVE');
+    await expect(client.listTools()).rejects.toThrow('MCP_PAIRING_INACTIVE');
   }, 25_000);
 
   it('rejects missing, expired and rotated credentials, cross-project objects and unregistered documents', async () => {
