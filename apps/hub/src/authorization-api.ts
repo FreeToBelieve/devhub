@@ -265,5 +265,5 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
   registerMcpApi(app, routes, tasks, mcpReads(tasks, git, unity), clock, mcpTimeout);
   registerProjectApi(routes, tasks, codexWorktreeRoot);
   registerGitApi(routes, tasks, git, codexWorktreeRoot);
-  registerUnityApi(routes, tasks, unity);
+  registerUnityApi(app, routes, tasks, unity);
 }

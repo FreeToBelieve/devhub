@@ -34,6 +34,17 @@ export async function localGitIdentity(root: string) {
   return { head: gitHeadSchema.parse(head.trim()), ref: ref.trim() };
 }
 
+export async function verifyCaptureRevision(root: string, commit: string, scenePath: string) {
+  const sha = gitHeadSchema.parse(commit);
+  const [resolved, scene] = await Promise.all([
+    git(root, ['rev-parse', '--verify', sha + '^{commit}']),
+    git(root, ['--literal-pathspecs', 'ls-tree', '-rz', sha, '--', scenePath]),
+  ]);
+  const tab = scene.indexOf('\t');
+  return resolved.trim() === sha && /^100(?:644|755) blob [a-f0-9]+$/.test(scene.slice(0, tab)) &&
+    scene.slice(tab + 1) === scenePath + '\0';
+}
+
 export async function prepareDeliveryBranch(root: string, branch: string, expectedHead: string) {
   const name = deliveryBranchName.parse(branch);
   const target = 'refs/heads/' + name;

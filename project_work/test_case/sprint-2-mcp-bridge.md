@@ -15,3 +15,5 @@ Dashboard 路径为「授权中心」登录 →「MCP 集成」选择项目和�
 - **NOT TESTED · Windows 11 x64 桌面。** 当前无桌面测试机。CI 继续覆盖 Windows Server 2025 与 macOS 15。
 - **PASS · 浏览器。** 使用本机 Chrome 和临时 Hub 完成操作员登录、选择项目、签发配对、轮换和撤销。旧凭据返回 HTTP 401；有效配对在 `devhub mcp doctor stdio` 中初始化并发现 31 个工具。
 - **PASS · 全量回归。** `pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm test`、`pnpm build` 通过。Vitest 共 14 个测试文件，110 个通过、9 个按平台跳过。
+
+永久配对回归覆盖显式选择、轮换后旧凭据失效、推进时钟十年且重启后仍可访问，以及撤销后立即拒绝。定时配对仍按原时间到期。

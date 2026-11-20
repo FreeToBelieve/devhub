@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { resolve } from 'node:path';
 import { executionPolicyVersion, legacyProjectId } from '@devhub/contracts';
-import type { RunnerClaimInput, UnityPlan, UnityRun } from '@devhub/contracts';
+import type { RunnerClaimInput, UnityPlan, UnityReviewRun, UnityRun } from '@devhub/contracts';
 import { taskSpecDigest } from '@devhub/storage';
 import type { TaskStore } from '@devhub/storage';
 import { sha256 } from '@devhub/security';
@@ -33,9 +33,19 @@ export function unityRuntime(store: TaskStore, artifacts: string) {
     return live;
   }
 
+  function pruneIds() { return [...store.unity.pruneIds(), ...store.unityEvidence.pruneIds()]; }
+
   return {
     artifacts,
-    sweep() { return sweepArtifacts(artifacts, store.unity.pruneIds()); },
+    reviewRun(id: string, projectId: string) {
+      return store.unity.get(id, projectId) ?? store.unityEvidence.get(id, projectId);
+    },
+    reviewRuns(projectId: string, refresh = true): UnityReviewRun[] {
+      const time = (run: UnityReviewRun) => 'source' in run ? run.importedAt : run.startedAt;
+      return [...store.unity.list(projectId, refresh), ...store.unityEvidence.list(projectId)]
+        .sort((left, right) => time(right) - time(left)).slice(0, 100);
+    },
+    sweep() { return sweepArtifacts(artifacts, pruneIds()); },
     async environment(worktreeId?: string, projectId = legacyProjectId) {
       const project = store.projects.require(projectId);
       const tree = worktreeId ? store.execution.getWorktree(worktreeId, projectId) : undefined;
@@ -75,7 +85,7 @@ export function unityRuntime(store: TaskStore, artifacts: string) {
       const { plan } = binding.scope;
       const workspace = await context(binding.worktreeId, projectId);
       const config = await unityConfiguration(workspace.projectRoot, plan, store.projects.require(projectId, true).unityVersion);
-      await sweepArtifacts(artifacts, store.unity.pruneIds());
+      await sweepArtifacts(artifacts, pruneIds());
       const workerId = randomUUID();
       let reserved: UnityRun | undefined;
       try {

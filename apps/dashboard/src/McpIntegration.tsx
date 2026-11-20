@@ -21,6 +21,7 @@ export function McpIntegration({ projects, projectId }: { projects: Project[]; p
   const [groups, setGroups] = useState<McpGroup[]>([...mcpGroups]);
   const [label, setLabel] = useState('ChatGPT');
   const [hours, setHours] = useState(24);
+  const [permanent, setPermanent] = useState(false);
   const [attempt, setAttempt] = useState(0);
 
   useEffect(() => {
@@ -64,7 +65,7 @@ export function McpIntegration({ projects, projectId }: { projects: Project[]; p
 
   function issue(event: FormEvent) {
     event.preventDefault();
-    void mutate('/api/mcp/pairings', 'POST', { label, projectIds: selected, groups, hours });
+    void mutate('/api/mcp/pairings', 'POST', { label, projectIds: selected, groups, hours: permanent ? null : hours });
   }
 
   function copy(value: string, note: string) {
@@ -74,7 +75,7 @@ export function McpIntegration({ projects, projectId }: { projects: Project[]; p
   if (!status) return <p className="panel empty"><a href="#authorization">登录授权中心后管理 MCP 连接</a></p>;
   const now = Date.now();
   const active = status.pairings.filter(({ revokedAt, expiresAt, lastSeenAt }) =>
-    revokedAt === null && expiresAt > now && lastSeenAt !== null && now - lastSeenAt < 45_000);
+    revokedAt === null && (expiresAt === null || expiresAt > now) && lastSeenAt !== null && now - lastSeenAt < 45_000);
   const names = new Map(projects.map(({ id, name }) => [id, name]));
   return <>
     <section className="panel">
@@ -92,7 +93,8 @@ export function McpIntegration({ projects, projectId }: { projects: Project[]; p
       <h2>新建配对</h2>
       <form className="form" onSubmit={issue}>
         <label>连接名称 <input required maxLength={60} value={label} onChange={(event) => setLabel(event.target.value)} /></label>
-        <label>有效期（小时） <input type="number" required min={1} max={720} value={hours}
+        <label><input type="checkbox" checked={permanent} onChange={(event) => setPermanent(event.target.checked)} /> 永久有效，直到轮换或撤销</label>
+        <label>有效期（小时） <input type="number" required={!permanent} disabled={permanent} min={1} max={720} value={hours}
           onChange={(event) => setHours(Number(event.target.value))} /></label>
         <fieldset><legend>允许访问的项目</legend>
           {projects.filter(({ repositoryRoot, status }) => repositoryRoot && status === 'ACTIVE').map(({ id, name }) =>
@@ -116,15 +118,15 @@ export function McpIntegration({ projects, projectId }: { projects: Project[]; p
       <h2>已配对连接</h2>
       {status.pairings.length === 0 && <p>暂无连接。</p>}
       {status.pairings.map((pairing) => {
-        const expired = pairing.expiresAt <= now;
+        const expired = pairing.expiresAt !== null && pairing.expiresAt <= now;
         return <article key={pairing.id}>
           <h3>{pairing.label}</h3>
           <p>{pairing.revokedAt !== null ? '已撤销' : expired ? '已过期' : active.includes(pairing) ? '最近在线' : '等待连接'} ·
-            {' '}{pairing.transport ?? '待选择传输'} · {new Date(pairing.expiresAt).toLocaleString()} 到期</p>
+            {' '}{pairing.transport ?? '待选择传输'} · {pairing.expiresAt === null ? '永久有效' : new Date(pairing.expiresAt).toLocaleString() + ' 到期'}</p>
           {pairing.tunnel && <p>Tunnel <code>{pairing.tunnel.id}</code> · {active.includes(pairing) ? pairing.tunnel.status : '状态未确认'}</p>}
           <p>{pairing.projectIds.map((id) => names.get(id) ?? id).join('、')} · {pairing.groups.map((group) => titles[group]).join('、')}</p>
           <button className="button" disabled={busy || expired || pairing.revokedAt !== null}
-            onClick={() => void mutate(`/api/mcp/pairings/${pairing.id}/rotate`, 'POST', { hours })}>轮换</button>{' '}
+            onClick={() => void mutate(`/api/mcp/pairings/${pairing.id}/rotate`, 'POST', { hours: pairing.expiresAt === null ? null : hours })}>轮换</button>{' '}
           <button className="button" disabled={busy || pairing.revokedAt !== null}
             onClick={() => void mutate(`/api/mcp/pairings/${pairing.id}`, 'DELETE')}>撤销</button>
         </article>;

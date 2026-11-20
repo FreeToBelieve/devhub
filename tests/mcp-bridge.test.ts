@@ -1,3 +1,4 @@
+import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
 import { mkdirSync, mkdtempDisposableSync, readFileSync, writeFileSync } from 'node:fs';
 import { createServer as createTcpServer } from 'node:net';
@@ -13,6 +14,9 @@ import { createLogger } from '@devhub/logger';
 import { createHubClient } from '@devhub/mcp-server';
 import { mcpIssueSchema, mcpMediaLimit } from '@devhub/mcp-contracts';
 import { afterEach, describe, expect, it } from 'vitest';
+import {
+  unityEvidenceContentType, unityEvidenceFiles, unityEvidenceHeader, unityEvidenceManifestSchema, unityEvidenceRunSchema,
+} from '../packages/contracts/dist/index.js';
 import { startHttp } from '../apps/mcp-server/dist/transports.js';
 import { openTaskStore } from '../packages/storage/dist/index.js';
 import { migrate } from '../packages/storage/dist/migrations.js';
@@ -126,9 +130,9 @@ async function fixture(mcpTimeout?: number) {
   expect(login.statusCode).toBe(200);
   const headers = { host, origin, cookie: String(login.headers['set-cookie']).split(';')[0]!,
     'x-csrf-token': login.json<{ csrfToken: string }>().csrfToken };
-  const issue = async (projectIds = [A.id], groups = ['projects', 'tasks', 'unity', 'git', 'codex']) => {
+  const issue = async (projectIds = [A.id], groups = ['projects', 'tasks', 'unity', 'git', 'codex'], hours: number | null = 1) => {
     const result = await app.inject({ method: 'POST', url: '/api/mcp/pairings', headers,
-      payload: { label: 'Synthetic acceptance', hours: 1, projectIds, groups } });
+      payload: { label: 'Synthetic acceptance', hours, projectIds, groups } });
     expect(result.statusCode, result.body).toBe(201);
     return mcpIssueSchema.parse(result.json());
   };
@@ -233,6 +237,23 @@ describe('MCP Bridge', () => {
     expect((await f.internal(both.credential, 'devhub_list_unity_runs', { projectId: f.A.id })).statusCode).toBe(401);
   }, 25_000);
 
+  it('keeps permanent pairings valid across time and restart until rotated or revoked', async () => {
+    const f = await fixture();
+    const pairing = await f.issue([f.A.id], ['projects'], null);
+    expect(pairing.pairing.expiresAt).toBeNull();
+    const endpoint = '/api/mcp/pairings/' + pairing.pairing.id;
+    const rotated = await f.app.inject({ method: 'POST', url: endpoint + '/rotate',
+      headers: f.headers, payload: { hours: null } });
+    const next = mcpIssueSchema.parse(rotated.json());
+    expect(next.pairing.expiresAt).toBeNull();
+    expect((await f.internal(pairing.credential, 'devhub_list_projects', {})).statusCode).toBe(401);
+    f.advance(3_600_000 * 24 * 365 * 10);
+    await f.restart();
+    expect((await f.internal(next.credential, 'devhub_list_projects', {})).statusCode).toBe(200);
+    f.store.mcp.revoke(pairing.pairing.id);
+    expect((await f.internal(next.credential, 'devhub_list_projects', {})).statusCode).toBe(401);
+  }, 25_000);
+
   it('checks HTTP loopback Host, Origin and bearer; enforces message and concurrency budgets', async () => {
     const f = await fixture(200);
     const pair = await f.issue();
@@ -270,7 +291,84 @@ describe('MCP Bridge', () => {
     f.releaseCredentials();
   }, 25_000);
 
-  it('preserves a v7 task through repeated v8 migration', () => {
+  it('imports a scoped real-media bundle and reads it as a Unity Run through MCP', async () => {
+    const f = await fixture();
+    const repository = f.A.repositoryRoot!;
+    const git = (...args: string[]) => execFileSync('git', ['-C', repository, ...args], { encoding: 'utf8', timeout: 10_000 });
+    git('init', '-q');
+    const scene = 'Assets/青溪 (fixture).unity';
+    writeFileSync(join(repository, scene), '%YAML 1.1');
+    git('add', '--', '.');
+    git('-c', 'user.name=DevHub Test', '-c', 'user.email=devhub@example.invalid',
+      '-c', 'commit.gpgSign=false', '-c', 'core.hooksPath=' + (process.platform === 'win32' ? 'NUL' : '/dev/null'),
+      'commit', '-qm', 'Review fixture');
+    const commit = git('rev-parse', 'HEAD').trim();
+    const log = Buffer.from('Unity Game View initialized\nprivate_token=synthetic-never-export');
+    const report = Buffer.from(JSON.stringify({ result: 'captured', access_token: 'synthetic-never-export' }));
+    const metadata = (bytes: Buffer) => ({ size: bytes.length, sha256: createHash('sha256').update(bytes).digest('hex') });
+    const manifest = unityEvidenceManifestSchema.parse({ version: 1, projectId: f.A.id, commit, scene,
+      captureSource: 'LocalFixture.Capture', platform: 'MACOS', editorVersion: '6000.3.28f1',
+      capturedAt: Date.now(), width: 960, height: 540, console: { name: 'console.log', ...metadata(log) }, report: metadata(report),
+      skills: ['wind', 'guard'].map((id) => ({ id, name: id === 'wind' ? '风式' : '护身', frames: [{ name: '01_before', ...metadata(png) }, { name: '02_hit', ...metadata(png) }], recording: { name: 'clip', ...metadata(mp4) } })),
+    });
+    const files = [png, png, mp4, png, png, mp4, log, report];
+    const payload = (meta = manifest, contents = files) => Buffer.concat([unityEvidenceHeader(meta), ...contents]);
+    const endpoint = '/api/unity/evidence/import';
+    const upload = (body: Buffer, options: { projectId?: string; auth?: boolean; csrf?: boolean; origin?: string } = {}) =>
+      f.app.inject({ method: 'POST', url: endpoint, headers: {
+        'content-type': unityEvidenceContentType, 'x-devhub-project-id': options.projectId ?? f.A.id,
+        host: f.headers.host, origin: options.origin ?? f.headers.origin,
+        ...(options.auth === false ? {} : { cookie: f.headers.cookie }),
+        ...(options.csrf === false ? {} : { 'x-csrf-token': f.headers['x-csrf-token'] }),
+      }, payload: body });
+    expect((await upload(payload(), { auth: false })).statusCode).toBe(401);
+    expect((await upload(payload(), { csrf: false })).statusCode).toBe(403);
+    expect((await upload(payload(), { origin: 'https://example.invalid' })).statusCode).toBe(403);
+    expect((await upload(payload(), { projectId: f.B.id })).json().code).toBe('UNITY_EVIDENCE_PROJECT_MISMATCH');
+    expect((await upload(payload({ ...manifest, commit: '0'.repeat(40) }))).json().code).toBe('UNITY_EVIDENCE_REVISION_INVALID');
+    expect((await upload(payload({ ...manifest, scene: 'Assets/Missing.unity' }))).json().code).toBe('UNITY_EVIDENCE_REVISION_INVALID');
+    const corrupt = Buffer.from(png);
+    corrupt[40] = (corrupt[40] ?? 0) ^ 1;
+    expect((await upload(payload(manifest, [corrupt, ...files.slice(1)]))).json().code).toBe('UNITY_EVIDENCE_HASH_MISMATCH');
+    expect((await upload(payload({ ...manifest, width: 1920 }))).json().code).toBe('UNITY_EVIDENCE_MEDIA_INVALID');
+    expect((await upload(Buffer.concat([payload(), Buffer.from('extra')]))).statusCode).toBe(409);
+    expect((await upload(payload().subarray(0, -1))).statusCode).toBe(409);
+    expect(f.store.unityEvidence.list(f.A.id)).toHaveLength(0);
+
+    const imported = await upload(payload());
+    expect(imported.statusCode, imported.body).toBe(201);
+    const run = unityEvidenceRunSchema.parse(imported.json());
+    expect(run).toMatchObject({ projectId: f.A.id, commit, source: 'EXTERNAL_CAPTURE', width: 960, height: 540 });
+    expect(run.artifacts).toHaveLength(unityEvidenceFiles(manifest).length + 1);
+    expect(unityEvidenceRunSchema.parse((await upload(payload())).json()).id).toBe(run.id);
+    const uris = (projectId: string) => '/api/unity/runs/' + run.id + '/artifact?name=wind__clip.mp4&projectId=' + projectId;
+    const playback = await f.app.inject({ method: 'GET', url: uris(f.A.id), headers: { ...f.headers, range: 'bytes=0-31' } });
+    expect(playback.statusCode).toBe(206);
+    expect(playback.rawPayload.equals(mp4.subarray(0, 32))).toBe(true);
+    expect((await f.app.inject({ method: 'GET', url: uris(f.B.id), headers: f.headers })).statusCode).toBe(404);
+
+    const pair = await f.issue([f.A.id, f.B.id], ['unity']);
+    const invoke = (tool: string, extra: object = {}, projectId = f.A.id) =>
+      f.internal(pair.credential, tool, { projectId, runId: run.id, ...extra });
+    const summary = await invoke('devhub_get_unity_run');
+    expect(summary.json()).toMatchObject({ data: { id: run.id, source: 'EXTERNAL_CAPTURE', scene } });
+    const listing = await f.internal(pair.credential, 'devhub_list_unity_runs', { projectId: f.A.id });
+    expect(listing.json().data.items[0].id).toBe(run.id);
+    const artifacts = (await invoke('devhub_list_unity_artifacts')).json<{ data: { id: string; skillId?: string; mime: string }[] }>().data;
+    const photo = artifacts.find((entry) => entry.skillId === 'wind' && entry.mime === 'image/png')!;
+    const clip = artifacts.find((entry) => entry.skillId === 'wind' && entry.mime === 'video/mp4')!;
+    const image = await invoke('devhub_get_unity_screenshot', { artifactId: photo.id });
+    expect(Buffer.from(image.json().media.data, 'base64').equals(png)).toBe(true);
+    expect((await invoke('devhub_get_unity_recording_metadata', { artifactId: clip.id })).json().data.reviewFrames)
+      .toMatchObject([{ id: photo.id, skillId: 'wind' }, { skillId: 'wind' }]);
+    expect((await invoke('devhub_get_unity_screenshot', { artifactId: photo.id }, f.B.id)).statusCode).toBe(404);
+    const diagnostics = await invoke('devhub_get_unity_diagnostics');
+    expect(diagnostics.body).toContain('captured');
+    expect(diagnostics.body).toContain('[REDACTED]');
+    expect(diagnostics.body).not.toContain('synthetic-never-export');
+  }, 60_000);
+
+  it('preserves a v7 task through repeated migrations', () => {
     const db = new DatabaseSync(':memory:');
     try {
       migrate(db, 7);
@@ -280,7 +378,7 @@ describe('MCP Bridge', () => {
         VALUES (?,'Existing task','','BOTH','CREATED','2026-01-01',3,?)`).run(id, projectId!);
       migrate(db);
       migrate(db);
-      expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(8);
+      expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(9);
       expect(db.prepare('SELECT title,revision FROM tasks WHERE id=?').get(id)).toMatchObject({ title: 'Existing task', revision: 3 });
       expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     } finally { db.close(); }

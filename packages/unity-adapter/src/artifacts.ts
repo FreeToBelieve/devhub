@@ -23,8 +23,16 @@ const kinds = {
   'game-view.png': ['editor-screenshot', 'image/png'], 'player.png': ['player-screenshot', 'image/png'],
   'player.mp4': ['recording', 'video/mp4'],
   'game-view.mp4': ['editor-recording', 'video/mp4'],
+  'console.log': ['log', 'text/plain'], 'console.json': ['log', 'application/json'], 'evidence-report.json': ['report', 'application/json'],
+  'evidence-manifest.json': ['report', 'application/json'], 'visual-audit.txt': ['report', 'text/plain'],
 } as const;
 
+function artifactKind(name: string): readonly [UnityArtifact['kind'], UnityArtifact['mime']] | null {
+  if (Object.hasOwn(kinds, name)) return kinds[name as keyof typeof kinds];
+  if (/^[a-z][a-z0-9-]{0,39}__[a-zA-Z0-9_-]{1,48}\.png$/.test(name)) return ['editor-screenshot', 'image/png'];
+  if (/^[a-z][a-z0-9-]{0,39}__[a-zA-Z0-9_-]{1,48}\.mp4$/.test(name)) return ['editor-recording', 'video/mp4'];
+  return null;
+}
 export function pathInside(root: string, candidate: string) {
   const value = relative(root, candidate);
   return value !== '' && !isAbsolute(value) && value !== '..' && !value.startsWith('..' + sep);
@@ -103,7 +111,7 @@ export async function createRunDirectory(root: string, id: string, project: stri
 }
 
 export async function readArtifact(root: string, id: string, name: string) {
-  if (!runIdPattern.test(id) || !Object.hasOwn(kinds, name)) throw new Error('UNITY_ARTIFACT_UNSAFE');
+  if (!runIdPattern.test(id) || !artifactKind(name)) throw new Error('UNITY_ARTIFACT_UNSAFE');
   return openArtifact(await privateRunDirectory(root, id), name);
 }
 
@@ -129,10 +137,13 @@ async function openArtifact(dir: string, name: string) {
   } catch (error) { await file.close(); throw error; }
 }
 
-export async function catalogArtifacts(directory: string): Promise<UnityArtifact[]> {
+export async function catalogArtifacts(directory: string, names: readonly string[] = Object.keys(kinds)): Promise<UnityArtifact[]> {
   const verified = await privateRunDirectory(dirname(directory), relative(dirname(directory), directory));
   const result: UnityArtifact[] = [];
-  for (const [name, [kind, mime]] of Object.entries(kinds)) {
+  for (const name of names) {
+    const type = artifactKind(name);
+    if (!type) throw new Error('UNITY_ARTIFACT_UNSAFE');
+    const [kind, mime] = type;
     const info = await lstat(join(verified, name)).catch(() => undefined);
     if (!info) continue;
     const file = await openArtifact(verified, name);
@@ -184,5 +195,5 @@ export async function sweepArtifacts(root: string, candidates: readonly string[]
 }
 
 export function artifactMime(name: string) {
-  return Object.hasOwn(kinds, name) ? kinds[name as keyof typeof kinds][1] : null;
+  return artifactKind(name)?.[1] ?? null;
 }

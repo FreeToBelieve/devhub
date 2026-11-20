@@ -70,7 +70,7 @@ export const mcpPairInput = z.strictObject({
   label: z.string().trim().min(1).max(60),
   projectIds: z.array(z.uuid()).min(1).max(32),
   groups: z.array(mcpGroupSchema).min(1).max(mcpGroups.length),
-  hours: z.int().min(1).max(720),
+  hours: z.int().min(1).max(720).nullable(),
 });
 export const mcpTunnelSchema = z.strictObject({
   id: z.string().regex(/^tunnel_[a-z0-9]{16,80}$/),
@@ -78,7 +78,7 @@ export const mcpTunnelSchema = z.strictObject({
 });
 export type McpTunnel = z.infer<typeof mcpTunnelSchema>;
 export const mcpPairSchema = mcpPairInput.omit({ hours: true }).extend({
-  id: z.uuid(), expiresAt: z.int(), revokedAt: z.int().nullable(),
+  id: z.uuid(), expiresAt: z.int().positive().nullable(), revokedAt: z.int().nullable(),
   lastSeenAt: z.int().nullable(),
   transport: z.enum(['stdio', 'http']).nullable(),
   protocolVersion: z.string().nullable(),

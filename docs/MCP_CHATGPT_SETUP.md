@@ -2,7 +2,7 @@
 
 ## 1. 启动和配对
 
-在 DevHub 根目录运行 `pnpm install --frozen-lockfile`、`pnpm build`、`pnpm start`。在另一个终端运行 `pnpm authorization bootstrap`。打开 [本机授权中心](http://127.0.0.1:4317/#authorization)，登录后在「MCP 集成」选择允许的项目和工具权限，生成一次性显示的配对凭据。
+在 DevHub 根目录运行 `pnpm install --frozen-lockfile`、`pnpm build`、`pnpm start`。在另一个终端运行 `pnpm authorization bootstrap`。打开 [本机授权中心](http://127.0.0.1:4317/#authorization)，登录后在「MCP 集成」选择允许的项目和工具权限，生成一次性显示的配对凭据。可选「永久有效」，由操作员主动轮换或撤销。
 
 `DEVHUB_MCP_PAIRING` 是本机配对凭据。轮换后重启对应 Bridge 或 Tunnel 进程，并提供新的凭据。
 
