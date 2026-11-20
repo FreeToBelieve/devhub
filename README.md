@@ -136,7 +136,9 @@ macOS 可在授权中心为本次 Turn 选择 `DEVELOPER_CONNECT`，运行受控
 
 首次配置使用独立测试仓库。登录授权中心后，打开「Git 管理」，登记仓库 HTTPS URL 和该项目的令牌。GitHub 使用目标仓库的 Contents 与 Pull requests 读写、Checks 与 Commit statuses 读取权限。GitLab 需要 MR API 访问和 Git 写入权限。自建 GitLab 可设置例如 `https://gitlab.example.com:9998/api/v4` 的 API Base URL，使用与仓库相同的 HTTPS origin、可验证的证书和公网 IPv4 或 IPv6 DNS。撤销按钮清理当前 DevHub 的系统凭据引用和条目，服务端令牌可在 Provider 设置中吊销。
 
-直连不稳定时可在 Hub 中显式设置 `DEVHUB_GIT_HTTPS_PROXY=http://127.0.0.1:7890`，指向操作员信任的本机 CONNECT 代理。DevHub 仍逐次解析并固定公网 IP，在隧道内校验原主机的 TLS 证书。这项配置只应用于 Hub 的 Git 集成。
+直连不稳定时可在 Hub 中显式设置 `DEVHUB_GIT_HTTPS_PROXY=http://127.0.0.1:7890`，指向操作员信任的本机 CONNECT 代理。默认由 DevHub 逐次解析并固定公网 IP，在隧道内校验原主机的 TLS 证书。
+
+自建 GitLab 如果需要走本机代理的域名分流，可同时在 `.env` 配置 `DEVHUB_GIT_PROXY_DNS_ORIGIN=https://gitlab.example.com:9998`，然后重启 Hub。填入该站点的 HTTPS 域名和端口。该站点的解析和出站地址由受信代理决定，DevHub 继续核验原域名的 TLS 证书。配置仅适用于此 HTTPS origin 的 Git API 和 Git 传输，其他站点仍固定公网 IP。
 
 1. 用干净的本地克隆创建 `devhub/` 开发分支和受管 Worktree。源克隆 HEAD 须与远端默认分支一致。
 2. 在授权中心批准 Codex 任务。任务结束后回到 Git 管理页，选择任务和 Worktree，填写 Git 作者和 PR/MR 说明。

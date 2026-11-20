@@ -80,6 +80,7 @@ describe('Git provider boundaries', () => {
     const address = proxy.address();
     if (!address || typeof address === 'string') throw new Error('test listener failed');
     vi.stubEnv('DEVHUB_GIT_HTTPS_PROXY', 'http://127.0.0.1:' + address.port);
+    vi.stubEnv('DEVHUB_GIT_PROXY_DNS_ORIGIN', undefined);
     try {
       for (const [ip, target] of [['1.1.1.1', '1.1.1.1:9998'], ['2606:4700:4700::1111', '[2606:4700:4700::1111]:9998']] as const) {
         await expect(openGitHttps(new URL('https://gitlab.example.com:9998/test'), 'GET',
@@ -90,6 +91,53 @@ describe('Git provider boundaries', () => {
       vi.unstubAllEnvs();
       await new Promise<void>((done) => proxy.close(() => done()));
     }
+  });
+
+  it('delegates DNS only for the configured HTTPS origin and sends no credentials in CONNECT', async () => {
+    const proxy = createServer();
+    const observed: { destination: string | undefined; credentialPresent: boolean }[] = [];
+    proxy.on('connect', (incoming, socket) => {
+      observed.push({ destination: incoming.url, credentialPresent: JSON.stringify(incoming.headers).includes(secret) });
+      socket.end('HTTP/1.1 403 Forbidden\r\n\r\n');
+    });
+    await new Promise<void>((ready) => proxy.listen(0, '127.0.0.1', ready));
+    const address = proxy.address();
+    if (!address || typeof address === 'string') throw new Error('test listener failed');
+    vi.stubEnv('DEVHUB_GIT_HTTPS_PROXY', 'http://127.0.0.1:' + address.port);
+    vi.stubEnv('DEVHUB_GIT_PROXY_DNS_ORIGIN', 'https://gitlab.example.com:9998');
+    vi.stubEnv('NO_PROXY', '*');
+    try {
+      const resolveAddresses = vi.fn(async () => ['1.1.1.1']);
+      for (const origin of ['https://gitlab.example.com:9998', 'https://gitlab.example.com:8443', 'https://other.example.com:9998']) {
+        await expect(openGitHttps(new URL(origin + '/api/v4/user'), 'GET', { 'PRIVATE-TOKEN': secret },
+          undefined, undefined, resolveAddresses)).rejects.toThrow('GIT_NETWORK_UNAVAILABLE');
+      }
+      expect(resolveAddresses.mock.calls).toEqual([['gitlab.example.com'], ['other.example.com']]);
+      expect(observed).toEqual(['gitlab.example.com:9998', '1.1.1.1:8443', '1.1.1.1:9998'].map((destination) => ({
+        destination, credentialPresent: false,
+      })));
+    } finally {
+      vi.unstubAllEnvs();
+      await new Promise<void>((done) => proxy.close(() => done()));
+    }
+  });
+
+  it('rejects invalid proxy DNS origins and configurations without a trusted loopback proxy', async () => {
+    const url = new URL('https://gitlab.example.com:9998/api/v4/user');
+    const resolveAddresses = vi.fn(async () => ['1.1.1.1']);
+    try {
+      for (const [origin, proxy] of [
+        [url.origin, undefined],
+        [url.origin, 'http://proxy.example.com:7890'],
+        [url.href, 'http://127.0.0.1:7890'],
+        ['https://*.example.com:9998', 'http://127.0.0.1:7890'],
+      ]) {
+        vi.stubEnv('DEVHUB_GIT_HTTPS_PROXY', proxy);
+        vi.stubEnv('DEVHUB_GIT_PROXY_DNS_ORIGIN', origin);
+        await expect(openGitHttps(url, 'GET', {}, undefined, undefined, resolveAddresses)).rejects.toThrow('GIT_EGRESS_PROXY_DENIED');
+      }
+      expect(resolveAddresses).not.toHaveBeenCalled();
+    } finally { vi.unstubAllEnvs(); }
   });
 
   it('pins the custom GitLab host and rejects non-HTTPS, embedded credentials, IPs and alternate API origins', () => {

@@ -92,19 +92,27 @@ export async function openGitHttps(
   resolveAddresses = resolveGitAddresses,
 ): Promise<IncomingMessage> {
   let proxy: string | null;
-  try { proxy = providerProxyEndpoint(process.env.DEVHUB_GIT_HTTPS_PROXY); }
-  catch { throw new GitProviderError('GIT_EGRESS_PROXY_DENIED'); }
+  let proxyResolvesHost = false;
+  try {
+    proxy = providerProxyEndpoint(process.env.DEVHUB_GIT_HTTPS_PROXY);
+    const configuredOrigin = process.env.DEVHUB_GIT_PROXY_DNS_ORIGIN;
+    if (configuredOrigin) {
+      const origin = secureUrl(configuredOrigin);
+      if (!proxy || origin.pathname !== '/') throw new GitProviderError('GIT_EGRESS_PROXY_DENIED');
+      proxyResolvesHost = url.origin === origin.origin;
+    }
+  } catch { throw new GitProviderError('GIT_EGRESS_PROXY_DENIED'); }
   signal.throwIfAborted();
   return new Promise((accept, reject) => {
     const failure = () => new GitProviderError('GIT_NETWORK_UNAVAILABLE');
     const abort = () => reject(failure());
     signal.addEventListener('abort', abort, { once: true });
-    void resolveAddresses(url.hostname).then((addresses) => {
+    const destination = proxyResolvesHost ? Promise.resolve(url.hostname) : resolveAddresses(url.hostname).then(publicGitAddress);
+    void destination.then((hostname) => {
       signal.throwIfAborted();
-      const address = publicGitAddress(addresses);
       const agent = new Agent({ keepAlive: false, ...(proxy ? { proxyEnv: { HTTPS_PROXY: proxy } } : {}) });
       const upstream = request({
-        hostname: address, servername: url.hostname, port: url.port || 443, method, path: url.pathname + url.search,
+        hostname, servername: url.hostname, port: url.port || 443, method, path: url.pathname + url.search,
         headers: { ...headers, Host: url.host, 'User-Agent': 'ShanHe-DevHub/0.1' },
         agent, signal, rejectUnauthorized: true, maxHeaderSize: 16384,
       }, (result) => {
