@@ -1,6 +1,6 @@
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempDisposableSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempDisposableSync, rmdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createServer } from '@devhub/hub';
@@ -252,7 +252,7 @@ describe.skipIf(process.platform !== 'win32')('Unity Windows Artifact ACLs', () 
     } finally { await hub.close(); }
   }, 60000);
 
-  it('fails closed when READ_CONTROL is denied, with DACL reset restricted to the test fixture', async () => {
+  it('fails closed when READ_CONTROL is denied on an empty test directory', async () => {
     using fixture = mkdtempDisposableSync(join(tmpdir(), 'devhub-unity-acl-'));
     const root = join(fixture.path, 'external');
     mkdirSync(root);
@@ -266,7 +266,7 @@ describe.skipIf(process.platform !== 'win32')('Unity Windows Artifact ACLs', () 
       await expect(hub.ready()).rejects.toThrow('UNITY_ARTIFACT_ACL_UNSAFE');
     } finally {
       await hub.close();
-      replaceDirectoryDacl(root, privateDacl);
+      rmdirSync(root);
     }
   }, 60000);
 

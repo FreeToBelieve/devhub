@@ -37,11 +37,23 @@ async function ordinaryDirectory(path: string) {
 }
 
 async function privateRoot(root: string) {
+  if (windows) {
+    // Realpath may expand a local DOS short name. Verify the supplied ancestry directly so
+    // aliases for ordinary directories work without allowing junctions or symlinks.
+    let directory = resolve(root);
+    if (!/^[a-z]:\\/i.test(directory)) throw new Error('UNITY_ARTIFACT_UNSAFE');
+    for (;;) {
+      const entry = await lstat(directory);
+      if (!entry.isDirectory() || entry.isSymbolicLink()) throw new Error('UNITY_ARTIFACT_UNSAFE');
+      const parent = dirname(directory);
+      if (parent === directory) break;
+      directory = parent;
+    }
+  }
   if ((await lstat(root)).isSymbolicLink()) throw new Error('UNITY_ARTIFACT_UNSAFE');
   const actual = await realpath(root);
   const info = await ordinaryDirectory(actual);
-  if (windows ? !/^[a-z]:\\/i.test(actual) || actual.toLowerCase() !== resolve(root).toLowerCase() :
-    info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
+  if (!windows && (info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0)) {
     throw new Error('UNITY_ARTIFACT_UNSAFE');
   }
   return actual;

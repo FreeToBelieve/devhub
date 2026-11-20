@@ -68,6 +68,8 @@ PNG SHA-256 `4daa2dc976471e26330a4ec874477e3d8defcea039eef728168cdcb1ec6980d9`�
 
 macOS 本机使用 Node.js `24.22.3`、pnpm `11.25.0`，锁定安装、typecheck、Vitest 和 build 通过。Vitest 96 项通过、8 项跳过，其中 Windows 原生 ACL 由 Windows Server CI 执行。
 
+macOS Unity 6.3 真机复跑 Batch 导入 `7d70d623`、EditMode `c1ee6e8d` 和 PlayMode `f64e7141`。故意失败 `f91715ca` 保留了预期值与实际值。编译错误 `344b5a21`、报告缺失 `a6779aaf` 和超时 `c1802676` 按预期回报各自的错误码并保留 Worktree 锁。
+
 ### macOS Player 和 AMFI 诊断
 
 检查了 2.5 原始 `.app` 的主可执行文件、应用签名、Frameworks 目录内所有四个动态库。逐项 `codesign --verify --strict` 和应用 `codesign --verify --deep --strict` 都返回 0。五个 Mach-O 项和应用签名均为 ad-hoc，无 Team Identifier。`Frameworks` 中未发现独立的 `.framework` bundle。
