@@ -21,6 +21,7 @@
     "zod": "^4.0.0",
     "@devhub/git-adapter": "workspace:*",
     "@devhub/git-provider": "workspace:*",
-    "@devhub/unity-adapter": "workspace:*"
+    "@devhub/unity-adapter": "workspace:*",
+    "@devhub/mcp-contracts": "workspace:*"
   }
 }

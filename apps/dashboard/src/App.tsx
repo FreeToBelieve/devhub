@@ -8,6 +8,7 @@ import { Authorization } from './Authorization.js';
 import { CodexRuns } from './CodexRuns.js';
 import { GitManagement } from './GitManagement.js';
 import { UnityRuntime } from './UnityRuntime.js';
+import { McpIntegration } from './McpIntegration.js';
 import { Projects, projectsSchema } from './Projects.js';
 
 const titles = {
@@ -19,13 +20,14 @@ const titles = {
   unity: 'Unity 测试',
   gitlab: 'Git 管理',
   settings: '系统设置',
+  mcp: 'MCP 集成',
   authorization: '授权中心',
 };
 type Page = keyof typeof titles;
 const navGroups: { label: string; pages: Page[] }[] = [
   { label: '工作区', pages: ['overview', 'projects', 'tasks', 'authorization'] },
   { label: '执行记录', pages: ['codex', 'unity', 'gitlab'] },
-  { label: '本机', pages: ['settings'] },
+  { label: '本机', pages: ['settings', 'mcp'] },
 ];
 
 function currentPage(): Page {
@@ -185,6 +187,7 @@ export function App() {
         {page === 'new-task' && (canCreate && project ? <NewTask key={projectId} project={project} onCreated={onCreated} /> :
           <p className="panel empty"><a href="#projects">选择一个已注册且未归档的项目</a></p>)}
         {page === 'settings' && <Environment />}
+        {page === 'mcp' && <McpIntegration key={projectId} projectId={projectId} projects={projects ?? []} />}
         {page === 'authorization' && <Authorization key={projectId} projectId={projectId} registered={!!project?.repositoryRoot}
           onSessionChange={() => reloadProjects()} />}
         {page === 'codex' && <CodexRuns key={projectId} projectId={projectId} />}

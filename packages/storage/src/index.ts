@@ -8,6 +8,7 @@ import { createCodexStore } from './codex-store.js';
 import { createGitStore } from './git-store.js';
 import { createUnityStore } from './unity-store.js';
 import { createProjectStore } from './project-store.js';
+import { createMcpStore } from './mcp-store.js';
 import { immediate, migrate } from './migrations.js';
 
 export { AuthorizationError, taskSpecDigest } from './execution-store.js';
@@ -30,7 +31,7 @@ export function openTaskStore(filename: string, managedDataDirectory = false, cl
       VALUES (?, ?, ?, ?, ?, ?, ?)
     `);
     const selectOne = database.prepare(`SELECT ${taskColumns} FROM tasks WHERE id = ?`);
-    const selectAll = database.prepare(`SELECT ${taskColumns} FROM tasks WHERE project_id=? ORDER BY created_at DESC, rowid DESC`);
+    const selectAll = database.prepare(`SELECT ${taskColumns} FROM tasks WHERE project_id=? ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`);
     const update = database.prepare(`UPDATE tasks SET title = ?, description = ?, target_platform = ?,
       revision = revision + 1 WHERE id = ? AND revision = ? RETURNING ${taskColumns}`);
     function get(id: string, projectId?: string): Task | undefined {
@@ -56,17 +57,35 @@ export function openTaskStore(filename: string, managedDataDirectory = false, cl
           if (!get(id, projectId)) return undefined;
           const row = update.get(input.title, input.description, input.targetPlatform, id, expectedRevision);
           if (!row) return undefined;
+          database.prepare('INSERT INTO task_revision_history (task_id,revision,updated_at) VALUES (?,?,?)')
+            .run(id, Number(row.revision), clock());
           execution.invalidateTaskInTransaction(id);
           return taskSchema.parse(row);
         });
       },
-      list(projectId = legacyProjectId): Task[] {
-        return selectAll.all(projectId).map((row) => taskSchema.parse(row));
+      list(projectId = legacyProjectId, limit = -1, offset = 0): Task[] {
+        return selectAll.all(projectId, limit, offset).map((row) => taskSchema.parse(row));
+      },
+      revisionHistory(id: string, projectId: string, limit: number, offset: number) {
+        return database.prepare(`SELECT h.revision, h.updated_at AS updatedAt FROM task_revision_history h
+          JOIN tasks t ON t.id=h.task_id WHERE t.id=? AND t.project_id=?
+          ORDER BY h.revision DESC LIMIT ? OFFSET ?`).all(id, projectId, limit, offset)
+          .map((row) => ({ revision: Number(row.revision), updatedAt: Number(row.updatedAt) }));
+      },
+      taskRequests(id: string, projectId: string, limit: number, offset: number) {
+        return database.prepare(`SELECT id, status, created_at AS createdAt
+          FROM execution_requests WHERE task_id=? AND project_id=?
+          ORDER BY created_at DESC, rowid DESC LIMIT ? OFFSET ?`).all(id, projectId, limit, offset);
+      },
+      latestRevisionAt(id: string) {
+        const row = database.prepare('SELECT max(updated_at) AS value FROM task_revision_history WHERE task_id=?').get(id);
+        return row?.value == null ? null : Number(row.value);
       },
       close() {
         database.close();
       },
       execution,
+      mcp: createMcpStore(database, clock),
       projects,
       codex: createCodexStore(database, clock),
       git: createGitStore(database, clock, projects),

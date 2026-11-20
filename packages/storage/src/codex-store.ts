@@ -89,12 +89,20 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
           diagnostic ?? (exitConfirmed ? null : 'PROCESS_EXIT_UNCONFIRMED'), id, workerId);
       return get(id)!;
     },
-    list(projectId = legacyProjectId) {
+    list(projectId = legacyProjectId, refresh = true) {
       const now = clock();
-      sql(`UPDATE codex_runs SET status='INTERRUPTED',finished_at=?,diagnostic_code='WORKER_HEARTBEAT_EXPIRED'
+      if (refresh) sql(`UPDATE codex_runs SET status='INTERRUPTED',finished_at=?,diagnostic_code='WORKER_HEARTBEAT_EXPIRED'
         WHERE status='RUNNING' AND heartbeat_at<=?`).run(now, now - heartbeatTimeout);
       return sql('SELECT ' + columns + ' FROM codex_runs WHERE project_id=? ORDER BY started_at DESC, rowid DESC LIMIT 100')
         .all(projectId).map((row) => decode(row)!);
+    },
+    eventSummary(id: string) {
+      const row = sql(`SELECT COUNT(*) AS eventCount,
+        SUM(CASE WHEN json_extract(event_json,'$.kind')='item.completed' THEN json_extract(event_json,'$.changedFiles') END) AS changedFiles
+        FROM codex_run_events WHERE run_id=?`).get(id);
+      const latest = sql('SELECT event_json FROM codex_run_events WHERE run_id=? ORDER BY seq DESC LIMIT 1').get(id);
+      return { eventCount: Number(row?.eventCount ?? 0), changedFiles: Number(row?.changedFiles ?? 0),
+        lastEvent: latest ? codexEventSchema.parse(JSON.parse(String(latest.event_json))).kind : null, usage: null };
     },
     events(id: string, after: number) {
       return sql(`SELECT seq, event_json AS eventJson, created_at AS createdAt FROM codex_run_events

@@ -158,3 +158,7 @@ pnpm build
 GitHub Actions 使用 Windows Server x64 与 macOS arm64 运行锁定依赖安装、类型检查、Vitest 和构建。Windows Server 作业验证原生 ACL 和构建，Windows 11 桌面仍需单独验收。
 
 加固范围和授权中心接口见 [Sprint 2.1 设计](project_work/requirement_docs/sprint-2-hardening.md)。验收路径和平台覆盖见 [Sprint 2.1 测试记录](project_work/test_case/sprint-2-hardening.md)。
+
+## ChatGPT MCP 集成
+
+在本机 Dashboard 的「MCP 集成」按项目创建只读配对，可查询任务、Codex 执行、Unity 报告及截图、Git 变更和 CI。ChatGPT 连接使用官方 Secure MCP Tunnel，DevHub 保持回环监听。参阅 [连接步骤](docs/MCP_CHATGPT_SETUP.md)、[架构](docs/MCP_ARCHITECTURE.md)、[安全边界](docs/MCP_SECURITY.md) 和 [故障排查](docs/MCP_TROUBLESHOOTING.md)。

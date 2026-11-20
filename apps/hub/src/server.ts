@@ -21,6 +21,7 @@ interface ServerOptions {
   managedUnityArtifactDirectory?: boolean;
   logger?: ReturnType<typeof createLogger>;
   clock?: () => number;
+  mcpTimeout?: number;
   gitDependencies?: Parameters<typeof gitDelivery>[1];
 }
 
@@ -82,7 +83,7 @@ export function createServer(options: ServerOptions): FastifyInstance {
 
   app.get('/api/health', async () => ({ status: 'ok' }));
   app.get('/api/doctor', async () => inspectEnvironment());
-  registerAuthorizationApi(app, tasks, options.port, clock, git, unity, options.codexWorktreeRoot);
+  registerAuthorizationApi(app, tasks, options.port, clock, git, unity, options.codexWorktreeRoot, options.mcpTimeout);
 
   app.setErrorHandler((error, request, reply) => {
     const status = error instanceof Error && 'statusCode' in error ? error.statusCode : undefined;

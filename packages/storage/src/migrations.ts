@@ -13,10 +13,10 @@ export function immediate<T>(database: DatabaseSync, operation: () => T): T {
   }
 }
 
-export function migrate(database: DatabaseSync, target = 7) {
+export function migrate(database: DatabaseSync, target = 8) {
   immediate(database, () => {
     const previous = database.prepare('PRAGMA user_version').get()?.user_version;
-    if (typeof previous !== 'number' || previous < 0 || previous > target || target > 7) {
+    if (typeof previous !== 'number' || previous < 0 || previous > target || target > 8) {
       throw new Error('Unsupported DevHub database version.');
     }
     if (previous < 1 && target >= 1) database.exec(`
@@ -267,5 +267,25 @@ export function migrate(database: DatabaseSync, target = 7) {
       PRAGMA user_version=6;
     `);
     if (previous < 7 && target >= 7) migrateProjects(database);
+    if (previous < 8 && target >= 8) database.exec(`
+      CREATE TABLE mcp_pairings (
+        id TEXT PRIMARY KEY NOT NULL, label TEXT NOT NULL,
+        projects TEXT NOT NULL CHECK (json_valid(projects)),
+        groups TEXT NOT NULL CHECK (json_valid(groups)),
+        digest TEXT NOT NULL UNIQUE, expires_at INTEGER NOT NULL, revoked_at INTEGER,
+        last_seen_at INTEGER, transport TEXT, protocol_version TEXT,
+        tunnel_json TEXT CHECK (json_valid(tunnel_json))
+      ) STRICT;
+      CREATE TABLE mcp_audit (
+        id INTEGER PRIMARY KEY AUTOINCREMENT,
+        connection_id TEXT NOT NULL REFERENCES mcp_pairings(id),
+        project_id TEXT, tool TEXT NOT NULL, result TEXT NOT NULL, created_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE TABLE task_revision_history (
+        task_id TEXT NOT NULL REFERENCES tasks(id), revision INTEGER NOT NULL,
+        updated_at INTEGER NOT NULL, PRIMARY KEY (task_id,revision)
+      ) STRICT;
+      PRAGMA user_version=8;
+    `);
   });
 }
