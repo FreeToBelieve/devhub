@@ -8,6 +8,7 @@
     { "path": "packages/codex-adapter" },
     { "path": "packages/git-provider" },
     { "path": "packages/git-adapter" },
+    { "path": "packages/unity-adapter" },
     { "path": "apps/runner" },
     { "path": "apps/hub" }
   ]

@@ -6,6 +6,7 @@ import { NewTask, TaskList } from './Tasks.js';
 import { Authorization } from './Authorization.js';
 import { CodexRuns } from './CodexRuns.js';
 import { GitManagement } from './GitManagement.js';
+import { UnityRuntime } from './UnityRuntime.js';
 
 const titles = {
   overview: '项目总览',
@@ -155,7 +156,7 @@ export function App() {
         {page === 'settings' && <Environment />}
         {page === 'authorization' && <Authorization />}
         {page === 'codex' && <CodexRuns />}
-        {page === 'unity' && <p className="panel empty">接入 Unity 测试后，这里会显示报告和日志。</p>}
+        {page === 'unity' && <UnityRuntime />}
         {page === 'gitlab' && <GitManagement />}
       </div>
     </main>

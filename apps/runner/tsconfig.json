@@ -15,12 +15,17 @@
     "src/**/*.ts"
   ],
   "references": [
-    { "path": "../../packages/codex-adapter" },
+    {
+      "path": "../../packages/codex-adapter"
+    },
     {
       "path": "../../packages/contracts"
     },
     {
       "path": "../../packages/security"
+    },
+    {
+      "path": "../../packages/unity-adapter"
     }
   ]
 }

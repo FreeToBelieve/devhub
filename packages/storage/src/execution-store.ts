@@ -165,7 +165,7 @@ export function createExecutionStore(database: DatabaseSync, getTask: (id: strin
       if (request.version !== change.expectedVersion) return new AuthorizationError('VERSION_CONFLICT');
       const requiredState = change.kind === 'approve' || change.kind === 'deny' ? 'PENDING' : 'APPROVED';
       if (request.status !== requiredState) return new AuthorizationError('STATE_CONFLICT');
-      if (change.kind === 'claim' && request.binding.scope.operation === 'codex.turn' && !onClaim) {
+      if (change.kind === 'claim' && ['codex.turn', 'unity.run'].includes(request.binding.scope.operation) && !onClaim) {
         return new AuthorizationError('FORBIDDEN');
       }
 

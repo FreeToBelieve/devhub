@@ -75,6 +75,9 @@ importers:
       '@devhub/storage':
         specifier: workspace:*
         version: link:../../packages/storage
+      '@devhub/unity-adapter':
+        specifier: workspace:*
+        version: link:../../packages/unity-adapter
       '@fastify/static':
         specifier: ^9.0.0
         version: 9.3.0
@@ -99,6 +102,9 @@ importers:
       '@devhub/security':
         specifier: workspace:*
         version: link:../../packages/security
+      '@devhub/unity-adapter':
+        specifier: workspace:*
+        version: link:../../packages/unity-adapter
 
   packages/codex-adapter:
     dependencies:
@@ -148,6 +154,15 @@ importers:
   packages/security: {}
 
   packages/storage:
+    dependencies:
+      '@devhub/contracts':
+        specifier: workspace:*
+        version: link:../contracts
+      '@devhub/security':
+        specifier: workspace:*
+        version: link:../security
+
+  packages/unity-adapter:
     dependencies:
       '@devhub/contracts':
         specifier: workspace:*

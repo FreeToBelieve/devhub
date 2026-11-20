@@ -6,7 +6,8 @@ import { createServer } from './server.js';
 import { dashboardDirectory, HubConfigError, readRuntimeConfig } from './runtime-config.js';
 
 async function start() {
-  const { port, databasePath, managedDataDirectory, level, codexWorktreeRoot } = readRuntimeConfig();
+  const { port, databasePath, managedDataDirectory, level, codexWorktreeRoot, unityArtifactRoot,
+    managedUnityArtifactDirectory } = readRuntimeConfig();
   if (!existsSync(resolve(dashboardDirectory, 'index.html'))) {
     console.error('Dashboard is not built. Run pnpm build from the workspace.');
     process.exitCode = 1;
@@ -19,6 +20,8 @@ async function start() {
     managedDataDirectory,
     dashboardDirectory,
     codexWorktreeRoot,
+    unityArtifactRoot,
+    managedUnityArtifactDirectory,
     logger: createLogger(level),
   });
 
@@ -55,6 +58,8 @@ try {
     console.error('DevHub could not start because the configured port is in use. Check DEVHUB_PORT.');
   } else if (code === 'DEVHUB_DB_PERMISSIONS') {
     console.error('DevHub could not secure its SQLite files. Check ownership and permissions on DEVHUB_DB_PATH and its parent directory.');
+  } else if (error instanceof Error && error.message.startsWith('UNITY_ARTIFACT_')) {
+    console.error(error.message + '. Check DEVHUB_UNITY_ARTIFACT_ROOT and its Windows directory ACL.');
   } else {
     console.error('DevHub could not start. Check the local .env and permissions on the database directory.');
   }

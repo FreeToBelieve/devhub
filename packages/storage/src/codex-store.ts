@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { codexEventSchema, codexRunSchema } from '@devhub/contracts';
 import type { CodexDiagnostic, CodexRun, CodexRunStatus, ExecutionRequest } from '@devhub/contracts';
 import { immediate } from './migrations.js';
+import { worktreeBusy } from './worktree-lock.js';
 
 const columns = `id AS devhubRunId, request_id AS requestId, worktree_id AS worktreeId,
   prompt_sha256 AS promptSha256, config_sha256 AS sdkConfigSha256, thread_id AS providerThreadId,
@@ -27,12 +28,14 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
     },
     get,
     reserveWithinClaim(request: ExecutionRequest, workerId: string) {
+      if (!database.isTransaction) throw new Error('CODEX_CLAIM_TRANSACTION_REQUIRED');
       const { binding } = request;
       const { scope } = binding;
       if (request.status !== 'CLAIMED' || scope.operation !== 'codex.turn' ||
           !scope.executionProfile || !scope.networkMode || !manages(binding.worktreeId)) {
         throw new Error('The approval does not cover a managed Codex worktree.');
       }
+      if (worktreeBusy(database, binding.worktreeId)) throw new Error('CODEX_WORKTREE_BUSY');
       if (scope.mode === 'resume') {
         const previous = scope.previousRunId && get(scope.previousRunId);
         if (!previous || previous.providerThreadId === null || previous.providerThreadId !== binding.codexThreadId ||

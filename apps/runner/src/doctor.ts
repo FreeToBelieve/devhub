@@ -19,6 +19,11 @@ export async function runCli(args: string[]): Promise<number> {
     for (const { id, status, detail } of report.checks) {
       console.log(`[${status.toUpperCase()}] ${id}: ${detail}`);
     }
+    if (report.unity) {
+      const { version, editor, hub, buildSupport, graphics, license, projectLocked, freeBytes } = report.unity;
+      console.log(`[UNITY] ${version} · ${editor ?? 'Editor unavailable'} · Hub ${hub ? 'available' : 'unavailable'} · Build Support ${buildSupport ? 'available' : 'unavailable'}`);
+      console.log(`[UNITY] Graphics ${graphics ? 'available' : 'unavailable'} · License ${license} · Project ${projectLocked ? 'locked' : 'openable'} · Disk ${freeBytes ?? 'unknown'} bytes`);
+    }
   }
   return report.checks.some((check) => check.status === 'fail') ? 1 : 0;
 }

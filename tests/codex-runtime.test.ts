@@ -273,7 +273,7 @@ it.skipIf(process.platform !== 'darwin' && process.platform !== 'win32')(
       const competing = await approve('locked worktree', first.devhubRunId);
       await expect(claimFromLocalRunner(store.execution, runner.id, competing, device, (request) => {
         store.codex.reserveWithinClaim(request, randomUUID());
-      })).rejects.toThrow(/UNIQUE/);
+      })).rejects.toThrow('CODEX_WORKTREE_BUSY');
       expect(store.codex.finish(interruptedId, workerId, 'CANCELLED', false, null).status).toBe('INTERRUPTED');
       expect(store.codex.finish(interruptedId, workerId, 'CANCELLED', true, null).exitConfirmedAt).toBe(now);
     } finally {

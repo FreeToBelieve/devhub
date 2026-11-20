@@ -15,8 +15,8 @@ export function immediate<T>(database: DatabaseSync, operation: () => T): T {
 export function migrate(database: DatabaseSync) {
   immediate(database, () => {
     const previous = database.prepare('PRAGMA user_version').get()?.user_version;
-    if (previous === 5) return;
-    if (previous !== 0 && previous !== 1 && previous !== 2 && previous !== 3 && previous !== 4) {
+    if (previous === 6) return;
+    if (previous !== 0 && previous !== 1 && previous !== 2 && previous !== 3 && previous !== 4 && previous !== 5) {
       throw new Error('Unsupported DevHub database version.');
     }
     if (previous === 0) database.exec(`
@@ -128,7 +128,7 @@ export function migrate(database: DatabaseSync) {
       CREATE INDEX codex_run_event_order ON codex_run_events(run_id, seq);
       PRAGMA user_version = 2;
     `);
-    if (previous !== 3 && previous !== 4) database.exec(`
+    if (previous !== 3 && previous !== 4 && previous !== 5) database.exec(`
       ALTER TABLE codex_runs ADD COLUMN worker_id TEXT;
       ALTER TABLE codex_runs ADD COLUMN heartbeat_at INTEGER;
       ALTER TABLE codex_runs ADD COLUMN exit_confirmed_at INTEGER;
@@ -137,7 +137,7 @@ export function migrate(database: DatabaseSync) {
         WHERE status='RUNNING';
       PRAGMA user_version = 3;
     `);
-    if (previous !== 4) database.exec(`
+    if (previous !== 4 && previous !== 5) database.exec(`
       CREATE TABLE git_providers (
         id TEXT PRIMARY KEY NOT NULL,
         kind TEXT NOT NULL CHECK (kind IN ('github','gitlab')),
@@ -223,7 +223,7 @@ export function migrate(database: DatabaseSync) {
       END;
       PRAGMA user_version = 4;
     `);
-    database.exec(`
+    if (previous !== 5) database.exec(`
       CREATE TABLE git_credential_cleanup (
         credential_ref TEXT PRIMARY KEY NOT NULL REFERENCES git_credentials_refs(id),
         next_attempt_at INTEGER NOT NULL,
@@ -236,6 +236,35 @@ export function migrate(database: DatabaseSync) {
         SELECT r.id, 0 FROM git_credentials_refs r
         WHERE NOT EXISTS (SELECT 1 FROM project_provider_connections c WHERE c.credential_ref=r.id);
       PRAGMA user_version = 5;
+    `);
+    database.exec(`
+      CREATE TABLE unity_runs (
+        id TEXT PRIMARY KEY NOT NULL,
+        request_id TEXT NOT NULL UNIQUE REFERENCES execution_requests(id),
+        task_id TEXT NOT NULL REFERENCES tasks(id),
+        runner_id TEXT NOT NULL REFERENCES authorization_runners(id),
+        worktree_id TEXT NOT NULL REFERENCES codex_worktrees(worktree_id),
+        base_head_sha TEXT NOT NULL, platform TEXT NOT NULL, plan TEXT NOT NULL CHECK (json_valid(plan)),
+        status TEXT NOT NULL CHECK (status IN ('RUNNING','COMPLETED','FAILED','CANCELLED','INTERRUPTED')),
+        phase TEXT, pid INTEGER, process_identity TEXT, worker_id TEXT NOT NULL,
+        cancel_requested INTEGER NOT NULL DEFAULT 0, started_at INTEGER NOT NULL, finished_at INTEGER,
+        heartbeat_at INTEGER NOT NULL, exit_confirmed INTEGER NOT NULL DEFAULT 0, diagnostic TEXT,
+        reports TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(reports)),
+        artifacts TEXT NOT NULL DEFAULT '[]' CHECK (json_valid(artifacts))
+      ) STRICT;
+      CREATE UNIQUE INDEX unity_worktree_lock ON unity_runs(worktree_id) WHERE status IN ('RUNNING','INTERRUPTED');
+      CREATE TRIGGER unity_excludes_other_work BEFORE INSERT ON unity_runs
+      WHEN EXISTS (SELECT 1 FROM codex_runs WHERE worktree_id=NEW.worktree_id AND status IN ('RUNNING','INTERRUPTED'))
+        OR EXISTS (SELECT 1 FROM git_operations WHERE worktree_id=NEW.worktree_id AND owner IS NOT NULL)
+      BEGIN SELECT RAISE(ABORT, 'UNITY_WORKTREE_BUSY'); END;
+      CREATE TRIGGER unity_excludes_codex BEFORE INSERT ON codex_runs
+      WHEN EXISTS (SELECT 1 FROM unity_runs WHERE worktree_id=NEW.worktree_id AND status IN ('RUNNING','INTERRUPTED'))
+      BEGIN SELECT RAISE(ABORT, 'UNITY_WORKTREE_BUSY'); END;
+      CREATE TRIGGER unity_excludes_git BEFORE UPDATE OF owner ON git_operations
+      WHEN NEW.owner IS NOT NULL AND EXISTS
+        (SELECT 1 FROM unity_runs WHERE worktree_id=NEW.worktree_id AND status IN ('RUNNING','INTERRUPTED'))
+      BEGIN SELECT RAISE(ABORT, 'UNITY_WORKTREE_BUSY'); END;
+      PRAGMA user_version=6;
     `);
   });
 }

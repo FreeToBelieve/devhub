@@ -1,4 +1,5 @@
 import { z } from 'zod';
+import { unityEnvironmentSchema } from './unity.js';
 
 export * from './authorization.js';
 export * from './codex-runtime.js';
@@ -35,6 +36,7 @@ export const doctorReportSchema = z.object({
   platform: z.string(),
   arch: z.string(),
   checks: z.array(doctorCheckSchema),
+  unity: unityEnvironmentSchema.optional(),
 });
 
 export type TargetPlatform = z.infer<typeof targetPlatformSchema>;
@@ -45,3 +47,5 @@ export type DoctorCheck = z.infer<typeof doctorCheckSchema>;
 export type DoctorReport = z.infer<typeof doctorReportSchema>;
 
 export * from './git-delivery.js';
+
+export * from './unity.js';
