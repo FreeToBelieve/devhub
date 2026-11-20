@@ -20,3 +20,8 @@
 - GitLab.com 和自建 GitLab 的 MR 路径由模拟 API 回归。指定的自建实例只有公网 AAAA 记录。通过主机名访问 `/api/v4/user` 返回 401，固定 IPv6 的 TLS 探测未通过。用户确认尚未创建独立 GitLab 测试仓库，未对正式项目发起操作。
 - Sprint 2.3C 原生沙箱和 npm、pnpm 冒烟通过。旧公共 GitHub 依赖 Fetch 两次返回 128，独立 GitHub 测试仓库的新交付链路通过。
 - Windows 11 x64 桌面和系统凭据实测仍待设备。Windows Server CI 结果单独列在交付 PR。
+
+## 自建 GitLab 代理域名分流
+
+- 原生 Node HTTPS 测试检查实际 CONNECT 目标。仅配置的 HTTPS 域名及端口交给受信代理解析，同主机其他端口及其他域名仍由 DevHub 固定公网 IP。缺少回环代理、代理为远程地址、输入仓库路径或通配域名时拒绝配置。测试同时核对 CONNECT 请求未携带合成 Git 凭据。
+- macOS 实测使用本机代理访问自建 GitLab 的非标准 HTTPS 端口。DevHub 通过真实 API 完成证书校验，使用只读令牌读取仓库、默认分支及 HEAD。该轮只覆盖真实只读访问。
