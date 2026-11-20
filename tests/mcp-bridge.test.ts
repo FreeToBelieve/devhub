@@ -35,7 +35,7 @@ async function freePort() {
   return address.port;
 }
 
-async function fixture() {
+async function fixture(mcpTimeout?: number) {
   const temp = mkdtempDisposableSync(join(tmpdir(), 'devhub-mcp-'));
   cleanup.push(() => temp.remove());
   const databasePath = join(temp.path, 'data', 'devhub.sqlite');
@@ -114,7 +114,7 @@ async function fixture() {
   const host = '127.0.0.1:' + port;
   const origin = 'http://' + host;
   let app = createServer({ port, databasePath, managedDataDirectory: true, unityArtifactRoot,
-    managedUnityArtifactDirectory: true, clock, gitDependencies, mcpTimeout: 200,
+    managedUnityArtifactDirectory: true, clock, gitDependencies, mcpTimeout,
     logger: createLogger('info', { write: (line) => logs.push(line) }) });
   cleanup.push(() => app.close());
   await app.listen({ port, host: '127.0.0.1' });
@@ -170,7 +170,10 @@ describe('MCP Bridge', () => {
     expect((await client.listResourceTemplates()).resourceTemplates).toHaveLength(10);
     const screenshot = await client.callTool({ name: 'devhub_get_unity_screenshot',
       arguments: { projectId: f.A.id, runId: f.runId, artifactId: f.artifactId } });
-    expect(screenshot.content).toContainEqual({ type: 'image', mimeType: 'image/png', data: png.toString('base64') });
+    const content = Array.isArray(screenshot.content) ? screenshot.content[0] : null;
+    if (content?.type !== 'image') throw new Error('Expected PNG content: ' + JSON.stringify(screenshot.content));
+    expect(content.mimeType).toBe('image/png');
+    expect(Buffer.from(content.data, 'base64').equals(png)).toBe(true);
     const uri = `devhub://projects/${f.A.id}/unity-runs/${f.runId}/artifacts`;
     const image = await client.readResource({ uri: uri + '/' + f.artifactId + '/image' });
     expect(image.contents[0]).toMatchObject({ mimeType: 'image/png', blob: png.toString('base64') });
@@ -231,7 +234,7 @@ describe('MCP Bridge', () => {
   }, 25_000);
 
   it('checks HTTP loopback Host, Origin and bearer; enforces message and concurrency budgets', async () => {
-    const f = await fixture();
+    const f = await fixture(200);
     const pair = await f.issue();
     const hub = createHubClient(f.port, pair.credential);
     const listener = await startHttp(hub, pair.credential, 0);
