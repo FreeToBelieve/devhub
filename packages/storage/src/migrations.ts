@@ -13,10 +13,10 @@ export function immediate<T>(database: DatabaseSync, operation: () => T): T {
   }
 }
 
-export function migrate(database: DatabaseSync, target = 8) {
+export function migrate(database: DatabaseSync, target = 9) {
   immediate(database, () => {
     const previous = database.prepare('PRAGMA user_version').get()?.user_version;
-    if (typeof previous !== 'number' || previous < 0 || previous > target || target > 8) {
+    if (typeof previous !== 'number' || previous < 0 || previous > target || target > 9) {
       throw new Error('Unsupported DevHub database version.');
     }
     if (previous < 1 && target >= 1) database.exec(`
@@ -286,6 +286,16 @@ export function migrate(database: DatabaseSync, target = 8) {
         updated_at INTEGER NOT NULL, PRIMARY KEY (task_id,revision)
       ) STRICT;
       PRAGMA user_version=8;
+    `);
+    if (previous < 9 && target >= 9) database.exec(`
+      CREATE TABLE unity_evidence_runs (
+        id TEXT PRIMARY KEY NOT NULL,
+        project_id TEXT NOT NULL REFERENCES projects(id),
+        manifest_sha256 TEXT NOT NULL, imported_at INTEGER NOT NULL, actor_digest TEXT NOT NULL,
+        data TEXT NOT NULL CHECK (json_valid(data)), UNIQUE(project_id,manifest_sha256)
+      ) STRICT;
+      CREATE INDEX unity_evidence_project ON unity_evidence_runs(project_id,imported_at DESC);
+      PRAGMA user_version=9;
     `);
   });
 }

@@ -232,6 +232,11 @@ details[open] .chevron { transform: rotate(225deg); }
 .git-patch .git-added { background: #dcfce7; color: #14532d; }
 .git-patch .git-removed { background: #fee2e2; color: #7f1d1d; }
 .git-blob { margin: .55rem 0 .35rem 1rem; overflow-wrap: anywhere; }
+.git-connection-target { display: flex; flex-wrap: wrap; align-items: baseline; gap: .25rem .75rem; overflow-wrap: anywhere; }
+.git-connection-target code { min-width: 0; }
+.git-connection-options { margin-bottom: 16px; }
+.git-connection-options summary { width: fit-content; cursor: pointer; color: var(--muted); }
+.git-connection-options label { margin-top: 10px; }
 
 .unity-runtime { display: grid; gap: 1rem; }
 .unity-environment { display: grid; grid-template-columns: max-content minmax(0,1fr); gap: .45rem 1rem; margin: 1rem; }

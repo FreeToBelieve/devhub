@@ -6,6 +6,7 @@ import { protectDatabaseFiles } from './database-permissions.js';
 import { createExecutionStore } from './execution-store.js';
 import { createCodexStore } from './codex-store.js';
 import { createGitStore } from './git-store.js';
+import { createUnityEvidenceStore } from './unity-evidence-store.js';
 import { createUnityStore } from './unity-store.js';
 import { createProjectStore } from './project-store.js';
 import { createMcpStore } from './mcp-store.js';
@@ -90,6 +91,7 @@ export function openTaskStore(filename: string, managedDataDirectory = false, cl
       codex: createCodexStore(database, clock),
       git: createGitStore(database, clock, projects),
       unity: createUnityStore(database, clock),
+      unityEvidence: createUnityEvidenceStore(database),
     };
   } catch (error) {
     database.close();

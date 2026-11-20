@@ -1,7 +1,8 @@
 import { Buffer } from 'node:buffer';
 import { createHash } from 'node:crypto';
 import { z } from 'zod';
-import type { GitChange, Project, Task, UnityArtifact, UnityEnvironment, UnityRun } from '@devhub/contracts';
+import type { GitChange, Project, Task, UnityArtifact, UnityEnvironment, UnityReviewRun } from '@devhub/contracts';
+import { unityArtifactsAvailable } from '@devhub/contracts';
 import { containsWorkspaceSecret, isWorkspaceSecretPath, sha256 } from '@devhub/security';
 import type { TaskStore } from '@devhub/storage';
 import { localGitIdentity } from '@devhub/git-adapter';
@@ -45,15 +46,22 @@ function environment(value: UnityEnvironment | null) {
   return { version, installedVersions: installedVersions.slice(0, 30), platform, editorAvailable: !!editor,
     hub, projectVersion, buildSupport, license, graphics, projectLocked, diagnostics: diagnostics.map((line) => publicText(line, 200)) };
 }
-function runSummary(run: UnityRun) {
+function runSummary(run: UnityReviewRun) {
+  if ('source' in run) {
+    const { artifacts: _artifacts, skills, ...capture } = run;
+    return { ...capture, skills: skills.map(({ id, name }) => ({ id, name: publicText(name, 100) })) };
+  }
   const { id, projectId, taskId, version, platform, phase, status, startedAt, finishedAt, exitConfirmed } = run;
   return { id, projectId, taskId, version, platform, phase, status, startedAt, finishedAt, exitConfirmed,
     diagnostic: run.diagnostic ? publicText(run.diagnostic, 180) : null, stages: run.reports.map(({ stage, code }) => ({ stage, code })) };
 }
-function artifactSummary(run: UnityRun, { name, kind, mime, size, sha256: digest, createdAt }: UnityArtifact) {
+function artifactSummary(run: UnityReviewRun, { name, kind, mime, size, sha256: digest, createdAt }: UnityArtifact) {
   const id = sha256(JSON.stringify([run.projectId, run.id, name, digest]));
+  const skillId = 'source' in run ? /^([a-z][a-z0-9-]{0,39})__/.exec(name)?.[1] : undefined;
+  const skill = 'source' in run && skillId ? run.skills.find((entry) => entry.id === skillId) : undefined;
   const resource = mime === 'image/png' ? 'image' : mime === 'video/mp4' ? 'recording' : null;
   return { id, kind, mime, size, sha256: digest, createdAt,
+    ...(skill ? { skillId: skill.id, skill: publicText(skill.name, 100), file: name } : {}),
     uri: resource ? `devhub://projects/${run.projectId}/unity-runs/${run.id}/artifacts/${id}/${resource}` : null };
 
 }
@@ -100,16 +108,17 @@ export function mcpReads(tasks: TaskStore, git: ReturnType<typeof gitDelivery>, 
     const project = projectId ? tasks.projects.get(projectId) : missing();
     if (!project) missing();
     const id = project.id;
-    const run = () => tasks.unity.get(input<'devhub_get_unity_run'>().runId, id) ?? missing();
+    const run = () => unity.reviewRun(input<'devhub_get_unity_run'>().runId, id) ?? missing();
     const codex = () => tasks.codex.get(input<'devhub_get_codex_run'>().runId, id) ?? missing();
     const task = () => tasks.get(input<'devhub_get_task'>().taskId, id) ?? missing();
+    const managedReports = (value: UnityReviewRun) => 'source' in value ? [] : value.reports;
     switch (tool) {
       case 'devhub_get_project': return { data: describe(project) };
       case 'devhub_get_project_overview':
         return { data: { project: describe(project),
           ...(pairing.groups.includes('tasks') ? { recentTasks: tasks.list(id, 5).map(describeTask) } : {}),
           ...(pairing.groups.includes('codex') ? { recentCodexRuns: tasks.codex.list(id, false).slice(0, 5) } : {}),
-          ...(pairing.groups.includes('unity') ? { recentUnityRuns: tasks.unity.list(id, false).slice(0, 5).map(runSummary) } : {}) } };
+          ...(pairing.groups.includes('unity') ? { recentUnityRuns: unity.reviewRuns(id, false).slice(0, 5).map(runSummary) } : {}) } };
       case 'devhub_get_project_environment':
       case 'devhub_get_unity_environment': return { data: await getEnvironment(project) };
       case 'devhub_list_project_documents':
@@ -153,22 +162,23 @@ export function mcpReads(tasks: TaskStore, git: ReturnType<typeof gitDelivery>, 
           runIds: current.providerThreadId ? tasks.codex.list(id, false).filter((row) => row.providerThreadId === current.providerThreadId)
             .slice(0, 20).map((row) => row.devhubRunId) : [current.devhubRunId] } };
       }
-      case 'devhub_list_unity_runs': return { data: pageArray(tasks.unity.list(id, false).map(runSummary), input<typeof tool>()) };
+      case 'devhub_list_unity_runs': return { data: pageArray(unity.reviewRuns(id, false).map(runSummary), input<typeof tool>()) };
       case 'devhub_get_unity_run': return { data: runSummary(run()) };
-      case 'devhub_get_unity_test_report': return { data: run().reports.filter((report) => report.tests).map(({ stage, tests }) => ({
+      case 'devhub_get_unity_test_report': return { data: managedReports(run()).filter((report) => report.tests).map(({ stage, tests }) => ({
         stage, tests: tests && { ...tests, names: tests.names.map((name) => publicText(name, 160)),
           failures: tests.failures?.map(({ name, message }) => ({ name: publicText(name, 160), message: publicText(message, 350) })) },
       })) };
       case 'devhub_get_unity_build_report':
-        return { data: run().reports.filter((report) => report.stage === 'BUILD').map(({ stage, code, exitCode, build }) =>
+        return { data: managedReports(run()).filter((report) => report.stage === 'BUILD').map(({ stage, code, exitCode, build }) =>
           ({ stage, code, exitCode, build })) };
       case 'devhub_get_unity_diagnostics': {
         const item = run();
         const query = input<typeof tool>();
-        const rows = item.reports.flatMap(({ stage, diagnostics }) => diagnostics.map(({ severity, code, line, message }) =>
+        const rows = managedReports(item).flatMap(({ stage, diagnostics }) => diagnostics.map(({ severity, code, line, message }) =>
           ({ stage, severity, code, line, message: publicText(message, 700) })));
-        const logs = query.offset === 0 && item.exitConfirmed ? await Promise.all(item.artifacts.filter(({ kind }) => kind === 'log')
-          .slice(0, 2).map(async ({ name, size }) => {
+        const files = query.offset === 0 && unityArtifactsAvailable(item) ? item.artifacts.filter(({ kind, name }) =>
+          kind === 'log' || name === 'evidence-report.json' || name === 'visual-audit.txt').slice(0, 3) : [];
+        const excerpts = await Promise.all(files.map(async ({ name, size }) => {
             const file = await readArtifact(unity.artifacts, item.id, name).catch(() => null);
             if (!file) return null;
             try {
@@ -176,12 +186,15 @@ export function mcpReads(tasks: TaskStore, git: ReturnType<typeof gitDelivery>, 
               const { bytesRead } = await file.read(buffer, 0, buffer.length, 0);
               return { name, text: publicText(buffer.subarray(0, bytesRead).toString('utf8'), 8000), truncated: size > bytesRead };
             } finally { await file.close(); }
-          })) : [];
-        return { data: { summary: runSummary(item), diagnostics: pageArray(rows, query), logs: logs.filter(Boolean) } };
+          }));
+        return { data: { summary: runSummary(item), diagnostics: pageArray(rows, query),
+          logs: excerpts.filter((entry) => entry && (entry.name === 'console.json' || entry.name.endsWith('.log'))),
+          evidenceReport: excerpts.find((entry) => entry?.name === 'evidence-report.json') ?? null,
+          visualAudit: excerpts.find((entry) => entry?.name === 'visual-audit.txt') ?? null } };
       }
       case 'devhub_list_unity_artifacts': {
         const item = run();
-        return { data: item.exitConfirmed ? item.artifacts.map((entry) => artifactSummary(item, entry)) : [] };
+        return { data: unityArtifactsAvailable(item) ? item.artifacts.map((entry) => artifactSummary(item, entry)) : [] };
       }
       case 'devhub_get_unity_screenshot':
       case 'devhub_get_unity_recording_metadata':
@@ -190,8 +203,9 @@ export function mcpReads(tasks: TaskStore, git: ReturnType<typeof gitDelivery>, 
         const { artifactId } = input<typeof tool>();
         const artifact = item.artifacts.find((entry) => artifactSummary(item, entry).id === artifactId);
         const mime = tool === 'devhub_get_unity_screenshot' ? 'image/png' : 'video/mp4';
-        if (!item.exitConfirmed || !artifact || artifact.mime !== mime) missing();
-        const frames = mime === 'video/mp4' ? item.artifacts.filter(({ mime: kind }) => kind === 'image/png')
+        if (!unityArtifactsAvailable(item) || !artifact || artifact.mime !== mime) missing();
+        const frames = mime === 'video/mp4' ? item.artifacts.filter(({ name, mime: kind }) => kind === 'image/png' &&
+          (!('source' in item) || name.split('__', 1)[0] === artifact.name.split('__', 1)[0]))
           .map((entry) => artifactSummary(item, entry)) : [];
         const data = { ...artifactSummary(item, artifact), runId: item.id, recordingResourceAvailable: mime === 'video/mp4' && artifact.size <= mcpMediaLimit,
           ...(mime === 'video/mp4' ? { reviewFrames: frames } : {}) };

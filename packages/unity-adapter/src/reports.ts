@@ -57,7 +57,7 @@ export function unityDiagnostics(text: string): UnityReport['diagnostics'] {
       results.push({ severity: severity!.toLowerCase() === 'warning' ? 'warning' : 'error', code: code!.toUpperCase(),
         file: /^(?:Assets|Packages)\//.test(cleaned) && !cleaned.split('/').includes('..') ? cleaned.slice(0, 280) : null,
         line: Number(number), message: message!.slice(0, 1000) });
-    } else if (/no valid unity editor license|unity has not been activated/i.test(line)) {
+    } else if (/no valid unity editor license|unity has not been activated|IPC channel to LicensingClient doesn't exist; aborting/i.test(line)) {
       results.push({ severity: 'error', code: 'UNITY_LICENSE_UNAVAILABLE', file: null, line: null, message: 'Unity license unavailable.' });
     } else if (/(?:failed to import|error importing|asset import failed)/i.test(line)) {
       results.push({ severity: 'error', code: 'UNITY_ASSET_IMPORT_FAILED', file: null, line: null, message: line.slice(0, 1000) });
