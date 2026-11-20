@@ -3,6 +3,7 @@ import { DatabaseSync } from 'node:sqlite';
 import { legacyProjectId, taskSchema } from '@devhub/contracts';
 import type { CreateTask, Task } from '@devhub/contracts';
 import { protectDatabaseFiles } from './database-permissions.js';
+import { createTaskInboxStore } from './task-inbox-store.js';
 import { createExecutionStore } from './execution-store.js';
 import { createCodexStore } from './codex-store.js';
 import { createGitStore } from './git-store.js';
@@ -12,6 +13,7 @@ import { createProjectStore } from './project-store.js';
 import { createMcpStore } from './mcp-store.js';
 import { immediate, migrate } from './migrations.js';
 
+export { InboxStateError } from './task-inbox-store.js';
 export { AuthorizationError, taskSpecDigest } from './execution-store.js';
 export { GitStateError } from './git-store.js';
 export { ProjectError, projectContextDigest } from './project-store.js';
@@ -41,29 +43,40 @@ export function openTaskStore(filename: string, managedDataDirectory = false, cl
     }
     const execution = createExecutionStore(database, get, clock, projects);
 
+    function createInTransaction(input: CreateTask, projectId: string): Task {
+      projects.require(projectId, true);
+      const task: Task = { ...input, id: randomUUID(), projectId, status: 'CREATED',
+        createdAt: new Date().toISOString(), revision: 1 };
+      insert.run(task.id, task.title, task.description, task.targetPlatform, task.status, task.createdAt, projectId);
+      return task;
+    }
+    function reviseInTransaction(id: string, expectedRevision: number, input: CreateTask, projectId: string) {
+      projects.require(projectId, true);
+      if (!get(id, projectId)) return undefined;
+      const row = update.get(input.title, input.description, input.targetPlatform, id, expectedRevision);
+      if (!row) return undefined;
+      database.prepare('INSERT INTO task_revision_history (task_id,revision,updated_at) VALUES (?,?,?)')
+        .run(id, Number(row.revision), clock());
+      execution.invalidateTaskInTransaction(id);
+      return taskSchema.parse(row);
+    }
+    const inbox = createTaskInboxStore(database, clock, projects, {
+      create: createInTransaction,
+      revise(id, spec, projectId) {
+        const task = get(id, projectId);
+        return task && reviseInTransaction(id, task.revision, spec, projectId);
+      },
+      invalidate: execution.invalidateTaskInTransaction,
+    });
     return {
-      create(input: CreateTask, projectId: string): Task {
-        return immediate(database, () => {
-          projects.require(projectId, true);
-          const task: Task = { ...input, id: randomUUID(), projectId, status: 'CREATED',
-            createdAt: new Date().toISOString(), revision: 1 };
-          insert.run(task.id, task.title, task.description, task.targetPlatform, task.status, task.createdAt, projectId);
-          return task;
-        });
+      create(input: CreateTask, projectId: string) {
+        return immediate(database, () => createInTransaction(input, projectId));
       },
       get,
-      revise(id: string, expectedRevision: number, input: CreateTask, projectId = legacyProjectId): Task | undefined {
-        return immediate(database, () => {
-          projects.require(projectId, true);
-          if (!get(id, projectId)) return undefined;
-          const row = update.get(input.title, input.description, input.targetPlatform, id, expectedRevision);
-          if (!row) return undefined;
-          database.prepare('INSERT INTO task_revision_history (task_id,revision,updated_at) VALUES (?,?,?)')
-            .run(id, Number(row.revision), clock());
-          execution.invalidateTaskInTransaction(id);
-          return taskSchema.parse(row);
-        });
+      revise(id: string, expectedRevision: number, input: CreateTask, projectId = legacyProjectId) {
+        return immediate(database, () => reviseInTransaction(id, expectedRevision, input, projectId));
       },
+      inbox,
       list(projectId = legacyProjectId, limit = -1, offset = 0): Task[] {
         return selectAll.all(projectId, limit, offset).map((row) => taskSchema.parse(row));
       },

@@ -6,7 +6,7 @@ import { createServer } from './server.js';
 import { dashboardDirectory, HubConfigError, readRuntimeConfig } from './runtime-config.js';
 
 async function start() {
-  const { port, databasePath, managedDataDirectory, level, codexWorktreeRoot, unityArtifactRoot,
+  const { port, databasePath, managedDataDirectory, level, codexHome, codexWorktreeRoot, unityArtifactRoot,
     managedUnityArtifactDirectory } = readRuntimeConfig();
   if (!existsSync(resolve(dashboardDirectory, 'index.html'))) {
     console.error('Dashboard is not built. Run pnpm build from the workspace.');
@@ -19,6 +19,7 @@ async function start() {
     databasePath,
     managedDataDirectory,
     dashboardDirectory,
+    codexHome,
     codexWorktreeRoot,
     unityArtifactRoot,
     managedUnityArtifactDirectory,

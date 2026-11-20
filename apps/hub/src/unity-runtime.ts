@@ -164,7 +164,7 @@ export function unityRuntime(store: TaskStore, artifacts: string) {
         scope: { operation: 'codex.turn', mode: 'resume', previousRunId: previous.devhubRunId,
           promptSha256: sha256(prompt), sdkConfigSha256: live.sdkConfigSha256, workspaceSha256: live.workspaceSha256,
           executionProfile: live.executionProfile, networkMode: 'OFF' },
-      }, actor, key, true);
+      }, actor, key, true, (created) => store.inbox.linkRepair(created, prompt));
       return { request, prompt };
     },
     cancel(id: string, projectId = legacyProjectId) {

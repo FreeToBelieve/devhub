@@ -18,7 +18,7 @@ function latestSchemaVersion() {
 
 describe('Project Registry migration', () => {
   const latest = latestSchemaVersion();
-  it.each([0, 1, 2, 3, 4, 5, 6, 7])('preserves and classifies a SQLite v%s fixture backup on repeated store open', async (version) => {
+  it.each([0, 1, 2, 3, 4, 5, 6, 7, 8, 9])('preserves and classifies a SQLite v%s fixture backup on repeated store open', async (version) => {
     const directory = mkdtempSync(join(tmpdir(), 'devhub-migration-'));
     const source = join(directory, 'original.sqlite');
     const copyDirectory = join(directory, 'managed');
@@ -28,7 +28,7 @@ describe('Project Registry migration', () => {
       const fixture = new DatabaseSync(source);
       try {
         const seed = seedHistoricalFixture(fixture, Math.min(6, version));
-        if (version === 7) migrate(fixture, 7);
+        if (version >= 7) migrate(fixture, version);
         await backup(fixture, copy);
         for (let attempt = 0; attempt < 2; attempt++) {
           const store = openTaskStore(copy, true);
@@ -37,7 +37,9 @@ describe('Project Registry migration', () => {
           } finally { store.close(); }
           const db = new DatabaseSync(copy, { readOnly: true });
           try {
+            expect(latest).toBe(10);
             expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(latest);
+            expect(db.prepare('SELECT count(*) AS n FROM codex_task_sessions').get()?.n).toBe(0);
             expectMigration(db, version, seed);
             expect(db.prepare('PRAGMA integrity_check').get()?.integrity_check).toBe('ok');
             expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);

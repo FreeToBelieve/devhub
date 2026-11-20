@@ -29,7 +29,7 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
       sql('INSERT INTO codex_worktrees(worktree_id) VALUES (?) ON CONFLICT DO NOTHING').run(id);
     },
     get,
-    reserveWithinClaim(request: ExecutionRequest, workerId: string) {
+    reserveWithinClaim(request: ExecutionRequest, workerId: string, hostOwner?: string) {
       if (!database.isTransaction) throw new Error('CODEX_CLAIM_TRANSACTION_REQUIRED');
       const { binding } = request;
       const { scope } = binding;
@@ -38,6 +38,26 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
         throw new Error('The approval does not cover a managed Codex worktree.');
       }
       if (worktreeBusy(database, binding.worktreeId)) throw new Error('CODEX_WORKTREE_BUSY');
+      const session = sql(`SELECT id,task_id,worktree_id,provider_thread_id,current_run_id,last_run_id FROM codex_task_sessions
+        WHERE task_id=? OR worktree_id=? LIMIT 1`).get(binding.taskId, binding.worktreeId);
+      const message = session && sql(`SELECT m.id,repair.request_id AS repair FROM codex_session_messages m
+        LEFT JOIN codex_session_repairs repair ON repair.message_id=m.id AND repair.request_id=?
+        JOIN github_inbox_prs p ON p.repository_id=m.repository_id AND p.number=m.pull_request_number
+        JOIN codex_host_connections h ON h.id=(SELECT host_id FROM codex_task_sessions WHERE id=m.session_id)
+        WHERE ((m.request_id=? AND m.status='DELIVERED') OR
+          (repair.request_id IS NOT NULL AND repair.run_id IS NULL AND m.status='COMPLETED'))
+          AND m.session_id=? AND m.task_revision=? AND p.open=1 AND p.head_sha=m.head_sha AND h.status='ACTIVE' AND h.lease_owner=?
+          AND h.heartbeat_at>? AND h.runner_id=?`).get(request.id, request.id, session.id!, binding.taskRevision, hostOwner ?? null,
+          clock() - heartbeatTimeout, binding.runnerId);
+      if (session && (!message || scope.executionProfile !== 'PROJECT_DEVELOPER' || scope.networkMode !== 'OFF' ||
+          (binding.codexThreadId !== null && scope.previousRunId !== session.last_run_id) || session.task_id !== binding.taskId || session.worktree_id !== binding.worktreeId ||
+          session.provider_thread_id !== binding.codexThreadId || session.current_run_id !== null)) {
+        throw new Error('INBOX_APPROVAL_MISMATCH');
+      }
+      if (binding.codexThreadId && sql(`SELECT 1 FROM codex_runs r JOIN execution_requests e ON e.id=r.request_id
+        WHERE r.thread_id=? AND (r.worktree_id<>? OR r.project_id<>? OR e.task_id<>? OR r.status IN ('RUNNING','INTERRUPTED'))`)
+        .get(binding.codexThreadId, binding.worktreeId, request.projectId, binding.taskId)) throw new Error('CODEX_THREAD_BUSY');
+
       if (scope.mode === 'resume') {
         const previous = scope.previousRunId && get(scope.previousRunId, request.projectId);
         if (!previous || previous.providerThreadId === null || previous.providerThreadId !== binding.codexThreadId ||
@@ -52,6 +72,11 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
         VALUES (?, ?, ?, ?, ?, ?, ?, 'RUNNING', ?, ?, ?, ?, ?)`)
         .run(id, request.id, binding.worktreeId, scope.promptSha256, scope.sdkConfigSha256,
           binding.codexThreadId, scope.previousRunId, process.pid, clock(), workerId, clock(), request.projectId);
+      if (session && message) {
+        if (message.repair) sql('UPDATE codex_session_repairs SET run_id=?,error_code=NULL WHERE request_id=?').run(id, request.id);
+        else sql("UPDATE codex_session_messages SET run_id=?,status='PROCESSING' WHERE id=?").run(id, message.id!);
+        sql('UPDATE codex_task_sessions SET current_run_id=?,updated_at=? WHERE id=?').run(id, clock(), session.id!);
+      }
       return get(id)!;
     },
     append(id: string, input: unknown) {
@@ -61,10 +86,15 @@ export function createCodexStore(database: DatabaseSync, clock: () => number) {
         if (run?.status !== 'RUNNING') throw new Error('The Codex run is inactive.');
         if (event.kind === 'thread.started') {
           if (!event.threadId || (run.providerThreadId && run.providerThreadId !== event.threadId) ||
-              sql('SELECT 1 FROM codex_runs WHERE thread_id=? AND project_id<>?').get(event.threadId, run.projectId)) {
+              sql(`SELECT 1 FROM codex_runs r JOIN execution_requests e ON e.id=r.request_id
+                WHERE thread_id=? AND r.id<>? AND (r.project_id<>? OR r.worktree_id<>?
+                  OR e.task_id<>(SELECT task_id FROM execution_requests WHERE id=?) OR r.status IN ('RUNNING','INTERRUPTED'))`)
+                .get(event.threadId, id, run.projectId, run.worktreeId, run.requestId)) {
             throw new Error('Codex returned an unexpected Thread identity.');
           }
           sql('UPDATE codex_runs SET thread_id=? WHERE id=?').run(event.threadId, id);
+          sql('UPDATE codex_task_sessions SET provider_thread_id=?,updated_at=? WHERE current_run_id=?')
+            .run(event.threadId, clock(), id);
         }
         sql('INSERT INTO codex_run_events (run_id,event_json,created_at) VALUES (?, ?, ?)')
           .run(id, JSON.stringify(event), clock());

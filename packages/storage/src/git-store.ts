@@ -35,6 +35,9 @@ export function createGitStore(database: DatabaseSync, clock: () => number, proj
     const project = projects.require(binding.projectId, true);
     const task = sql('SELECT project_id FROM tasks WHERE id=?').get(binding.taskId);
     const tree = sql('SELECT project_id,repo_id,root FROM authorization_worktrees WHERE worktree_id=?').get(binding.worktreeId);
+    if (sql('SELECT 1 FROM codex_task_sessions WHERE worktree_id=? AND task_id<>?').get(binding.worktreeId, binding.taskId)) {
+      throw new GitStateError('GIT_PROJECT_SCOPE_MISMATCH');
+    }
     if (task?.project_id !== project.id || tree?.project_id !== project.id || tree.repo_id !== binding.repoId ||
         tree.root !== binding.worktreeRoot || (project.repositoryRoot &&
           (project.repoId !== binding.repoId || projectContextDigest(project) !== binding.projectContextSha256))) {

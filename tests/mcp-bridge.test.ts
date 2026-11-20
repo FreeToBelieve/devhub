@@ -378,7 +378,7 @@ describe('MCP Bridge', () => {
         VALUES (?,'Existing task','','BOTH','CREATED','2026-01-01',3,?)`).run(id, projectId!);
       migrate(db);
       migrate(db);
-      expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(9);
+      expect(db.prepare('PRAGMA user_version').get()?.user_version).toBe(10);
       expect(db.prepare('SELECT title,revision FROM tasks WHERE id=?').get(id)).toMatchObject({ title: 'Existing task', revision: 3 });
       expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     } finally { db.close(); }

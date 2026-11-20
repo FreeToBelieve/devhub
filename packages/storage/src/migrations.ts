@@ -13,10 +13,10 @@ export function immediate<T>(database: DatabaseSync, operation: () => T): T {
   }
 }
 
-export function migrate(database: DatabaseSync, target = 9) {
+export function migrate(database: DatabaseSync, target = 10) {
   immediate(database, () => {
     const previous = database.prepare('PRAGMA user_version').get()?.user_version;
-    if (typeof previous !== 'number' || previous < 0 || previous > target || target > 9) {
+    if (typeof previous !== 'number' || previous < 0 || previous > target || target > 10) {
       throw new Error('Unsupported DevHub database version.');
     }
     if (previous < 1 && target >= 1) database.exec(`
@@ -296,6 +296,52 @@ export function migrate(database: DatabaseSync, target = 9) {
       ) STRICT;
       CREATE INDEX unity_evidence_project ON unity_evidence_runs(project_id,imported_at DESC);
       PRAGMA user_version=9;
+    `);
+    if (previous < 10 && target >= 10) database.exec(`
+      CREATE TABLE github_inbox_settings (
+        singleton INTEGER PRIMARY KEY CHECK (singleton=1), credential_ref TEXT,
+        enabled INTEGER NOT NULL DEFAULT 0, scanned_at INTEGER, error_code TEXT, pr_count INTEGER NOT NULL DEFAULT 0
+      ) STRICT;
+      INSERT INTO github_inbox_settings(singleton) VALUES(1);
+      CREATE TABLE github_inbox_prs (
+        repository_id INTEGER NOT NULL, number INTEGER NOT NULL, task_key TEXT NOT NULL,
+        task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id), project_id TEXT NOT NULL REFERENCES projects(id),
+        head_sha TEXT NOT NULL, open INTEGER NOT NULL CHECK (open IN (0,1)),
+        PRIMARY KEY (repository_id,number), UNIQUE(repository_id,task_key)
+      ) STRICT;
+      CREATE TABLE codex_host_connections (
+        singleton INTEGER PRIMARY KEY CHECK(singleton=1), id TEXT NOT NULL UNIQUE, installation_id TEXT NOT NULL UNIQUE,
+        runner_id TEXT NOT NULL REFERENCES authorization_runners(id), platform TEXT NOT NULL,
+        status TEXT NOT NULL CHECK(status IN ('ACTIVE','DISCONNECTED')), version TEXT NOT NULL,
+        heartbeat_at INTEGER NOT NULL, connected_at INTEGER NOT NULL, disconnected_at INTEGER, lease_owner TEXT,
+        reconnect INTEGER NOT NULL DEFAULT 1 CHECK(reconnect IN (0,1)),
+        CHECK ((status='ACTIVE')=(lease_owner IS NOT NULL))
+      ) STRICT;
+      CREATE TABLE codex_task_sessions (
+        id TEXT PRIMARY KEY NOT NULL, project_id TEXT NOT NULL REFERENCES projects(id),
+        task_id TEXT NOT NULL UNIQUE REFERENCES tasks(id), host_id TEXT REFERENCES codex_host_connections(id),
+        worktree_id TEXT UNIQUE REFERENCES codex_worktrees(worktree_id), provider_thread_id TEXT UNIQUE,
+        current_run_id TEXT UNIQUE REFERENCES codex_runs(id), last_run_id TEXT REFERENCES codex_runs(id),
+        created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL
+      ) STRICT;
+      CREATE INDEX codex_session_project ON codex_task_sessions(project_id,updated_at);
+      CREATE TABLE codex_session_messages (
+        id TEXT PRIMARY KEY NOT NULL, session_id TEXT NOT NULL REFERENCES codex_task_sessions(id),
+        project_id TEXT NOT NULL REFERENCES projects(id), task_id TEXT NOT NULL REFERENCES tasks(id),
+        repository_id INTEGER NOT NULL, pull_request_number INTEGER NOT NULL, head_sha TEXT NOT NULL,
+        sequence INTEGER NOT NULL, task_revision INTEGER NOT NULL, payload_json TEXT NOT NULL CHECK(json_valid(payload_json)),
+        status TEXT NOT NULL CHECK(status IN ('PENDING','DELIVERING','DELIVERED','PROCESSING','COMPLETED','FAILED','STALE')),
+        created_at INTEGER NOT NULL, delivered_at INTEGER, error_code TEXT,
+        request_id TEXT UNIQUE REFERENCES execution_requests(id), run_id TEXT UNIQUE REFERENCES codex_runs(id),
+        UNIQUE(repository_id,pull_request_number,head_sha), UNIQUE(session_id,sequence),
+        FOREIGN KEY(repository_id,pull_request_number) REFERENCES github_inbox_prs(repository_id,number)
+      ) STRICT;
+      CREATE TABLE codex_session_repairs (
+        request_id TEXT PRIMARY KEY NOT NULL REFERENCES execution_requests(id),
+        message_id TEXT NOT NULL REFERENCES codex_session_messages(id),
+        prompt TEXT NOT NULL, run_id TEXT UNIQUE REFERENCES codex_runs(id), error_code TEXT
+      ) STRICT;
+      PRAGMA user_version=10;
     `);
   });
 }
