@@ -166,6 +166,14 @@ describe('Unity Runner controls', () => {
     }
   }, 20000);
 
+  it('reports the native Unity 2022 licensing IPC failure from the sanitized Editor log', () => {
+    const log = sanitizeUnityText("[Licensing::Client] account: private-fixture\nIPC channel to LicensingClient doesn't exist; aborting");
+    expect(log).not.toContain('private-fixture');
+    expect(unityDiagnostics(log)).toEqual([{ severity: 'error', code: 'UNITY_LICENSE_UNAVAILABLE',
+      file: null, line: null, message: 'Unity license unavailable.' }]);
+    expect(unityDiagnostics("IPC channel to LicensingClient doesn't exist; falling back to Legacy licensing")).toEqual([]);
+  });
+
   it('requires an operator session, matching origin and CSRF on Unity routes', async () => {
     using fixture = mkdtempDisposableSync(join(tmpdir(), 'devhub-unity-api-'));
     const databasePath = join(fixture.path, 'data', 'hub.sqlite');
