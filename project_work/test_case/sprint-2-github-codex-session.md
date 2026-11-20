@@ -11,6 +11,8 @@ macOS 14.5 arm64，Node.js 24.22.3，pnpm 11.25.0。
 | `pnpm install --frozen-lockfile`、`pnpm typecheck`、`pnpm build` | PASS |
 | `pnpm test` | 15 个文件通过，123 项通过，9 项跳过 |
 | `pnpm run doctor` | 基础环境通过，发现 Unity 6000.3.28f1。未配置 Doctor 工程路径，Unity 授权未验证 |
+| Chromium Dashboard | 登录门禁、Inbox 表单、原生 Host 连接和断开通过 |
+| 本机 Keychain | 独立运行合成凭据写入、读取与幂等清理测试，通过 |
 | SQLite v0–v9 → v10 | 10 个历史结构副本分别重复打开。保留任务、授权摘要、历史 Thread、Unity 运行与 Git 引用，完整性和外键检查通过 |
 | 并发 | Worker Threads 各自打开 SQLite，用屏障同时进入真实写事务。同一项目三个 Codex Session 和跨项目的第四个都领取成功。重复领取和同 Thread 注册竞争各只有一个成功。不同树 Unity 与 Git 交付可并行 |
 | 原生 Host 锁 | 独立子进程竞争同一数据库路径的 OS 锁和独立 SQLite 连接竞争租约。两项均拒绝第二个持有者 |

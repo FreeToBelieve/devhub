@@ -125,7 +125,8 @@ export function TaskInbox({ projectId, projects }: { projectId: string; projects
   if (!data) return <p className="panel empty" role="status">{loadError || '正在读取收件箱…'}
     {loadError && <a href="#authorization">授权中心</a>}</p>;
 
-  const { host, listener, sessions, messageCounts } = data;
+  const { host, listener, sessions, sessionCounts, messageCounts } = data;
+  const discovered = Object.values(sessionCounts).reduce((sum, count) => sum + count, 0);
   const hostActive = host?.status === 'ACTIVE';
   const byTask = [...new Map(sessions.map((entry) => [entry.taskId, entry])).values()];
   return <div className="authorization">
@@ -135,7 +136,9 @@ export function TaskInbox({ projectId, projects }: { projectId: string; projects
       <div className="panel-heading"><h2>GitHub 收件箱</h2><span>{listener.enabled ? '监听中' : '已暂停'}</span></div>
       <div className="task-details">
         <p><a href={'https://github.com/' + taskInbox.repository} rel="noreferrer">{taskInbox.repository}</a></p>
-        <p>最近扫描 {date(listener.scannedAt)} · 匹配 PR {listener.prCount} · 待投递 {messageCounts.PENDING} · 待重试 {messageCounts.FAILED}</p>
+        <p>最近扫描 {date(listener.scannedAt)} · 匹配 PR {listener.prCount} · 已发现任务 {discovered}</p>
+        <p>待投递 {messageCounts.PENDING} · 等待授权 {sessionCounts.WAITING_APPROVAL} · 正在执行 {sessionCounts.RUNNING}
+          {' · 待重试消息 ' + messageCounts.FAILED}</p>
         {listener.errorCode && <p role="status"><code>{listener.errorCode}</code></p>}
         <div className="form-actions">
           <button className="button" disabled={busy || !listener.configured}
@@ -200,7 +203,9 @@ export function TaskInbox({ projectId, projects }: { projectId: string; projects
           <dt>Task</dt><dd><code>{active.taskId}</code></dd>
           <dt>Worktree</dt><dd><code>{active.worktreeId ?? '待准备'}</code></dd>
           <dt>Codex Thread</dt><dd><code>{active.providerThreadId ?? '待首次执行'}</code></dd>
-          {runId && <><dt>DevHub Run</dt><dd><code>{runId}</code></dd></>}
+          <dt>当前 Run</dt><dd><code>{active.currentRunId ?? '—'}</code></dd>
+          <dt>最近完成的 Run</dt><dd><code>{active.lastRunId ?? '—'}</code></dd>
+          <dt>最近更新</dt><dd>{date(active.updatedAt)}</dd>
         </dl>
         {active.status === 'INTERRUPTED' && <p role="status">工作树保持锁定，等待确认执行进程退出。</p>}
         <h3>任务消息</h3>

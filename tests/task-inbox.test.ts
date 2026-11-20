@@ -142,6 +142,7 @@ describe('GitHub Task Inbox', () => {
       const session = status.sessions[0]!;
       expect(store.inbox.messages(session.id)).toHaveLength(1);
       expect(status.messageCounts.PENDING).toBe(1);
+      expect(status.sessionCounts.QUEUED).toBe(1);
       expect(store.codex.list(project.id)).toEqual([]);
       expect(store.execution.requests(project.id)).toEqual([]);
       fixture.close();

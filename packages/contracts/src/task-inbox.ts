@@ -22,10 +22,11 @@ export const inboxHostSchema = z.object({
   status: z.enum(['ACTIVE', 'DISCONNECTED']), version: z.string(), heartbeatAt: z.int(),
   connectedAt: z.int(), disconnectedAt: z.int().nullable(),
 });
+const inboxSessionStatus = z.enum(['QUEUED', 'WAITING_APPROVAL', 'RUNNING', 'COMPLETED', 'FAILED', 'INTERRUPTED', 'CLOSED']);
 export const inboxSessionSchema = z.object({
   id: z.uuid(), taskId: z.uuid(), projectId: z.uuid(), hostId: z.uuid().nullable(), worktreeId: digestSchema.nullable(),
   providerThreadId: codexThreadIdSchema.nullable(), currentRunId: z.uuid().nullable(), lastRunId: z.uuid().nullable(),
-  status: z.enum(['QUEUED', 'WAITING_APPROVAL', 'RUNNING', 'COMPLETED', 'FAILED', 'INTERRUPTED', 'CLOSED']),
+  status: inboxSessionStatus,
   title: z.string(), updatedAt: z.int(),
 });
 export const inboxMessageSchema = z.object({
@@ -38,7 +39,7 @@ export const inboxStatusSchema = z.object({
   host: inboxHostSchema.nullable(),
   listener: z.object({ enabled: z.boolean(), configured: z.boolean(), scanning: z.boolean(),
     scannedAt: z.int().nullable(), errorCode: z.string().nullable(), prCount: z.int().nonnegative() }),
-  sessions: z.array(inboxSessionSchema), messageCounts: z.record(inboxMessageStatus, z.int().nonnegative()),
+  sessions: z.array(inboxSessionSchema), sessionCounts: z.record(inboxSessionStatus, z.int().nonnegative()), messageCounts: z.record(inboxMessageStatus, z.int().nonnegative()),
 });
 export type InboxSource = z.infer<typeof inboxSourceSchema>;
 export type InboxHost = z.infer<typeof inboxHostSchema>;

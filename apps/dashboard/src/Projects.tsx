@@ -151,7 +151,7 @@ export function Projects({ project, onRefresh, signedIn }: { project: Project | 
       </div>
     </section>}
     {details && details.project.id !== legacyProjectId && details.project.status === 'ACTIVE' && <section className="panel">
-      <div className="panel-heading"><h2>项目设置</h2></div>
+      <div className="panel-heading"><h2>项目设置</h2><a href="#task-inbox">Codex Sessions</a></div>
       <ProjectForm key={details.project.revision} initial={details.project} busy={busy} save={(input) => void action(async () => {
         await mutate('/api/projects/' + details.project.id, 'PUT', { ...input, expectedRevision: details.project.revision }, projectSchema);
         onRefresh();

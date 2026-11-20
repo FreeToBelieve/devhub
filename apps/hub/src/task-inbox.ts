@@ -234,7 +234,7 @@ export function taskInboxRuntime(tasks: TaskStore, databasePath: string, profile
       const config = registry.settings();
       return { host: registry.host(), listener: { enabled: config.enabled, configured: !!config.credentialRef,
         scanning: !!scan, scannedAt: config.scannedAt, errorCode: config.errorCode, prCount: config.prCount },
-        sessions: registry.sessions(), messageCounts: registry.counts() };
+        sessionCounts: registry.sessionCounts(), messageCounts: registry.counts() };
     },
     async configure(token: string) {
       if (configuring) throw new InboxStateError('INBOX_CONFIGURATION_BUSY');

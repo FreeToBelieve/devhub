@@ -228,6 +228,13 @@ export function createTaskInboxStore(database: DatabaseSync, clock: () => number
       return sql('SELECT id FROM codex_session_messages WHERE session_id=? ORDER BY sequence DESC').all(id)
         .map((row) => message(String(row.id))!);
     },
+    sessionCounts() {
+      const values = Object.fromEntries(inboxSessionSchema.shape.status.options.map((status) => [status, 0]));
+      for (const row of sql('SELECT status,count(*) AS n FROM (SELECT ' + sessionColumns + sessionJoin + ') GROUP BY status').all()) {
+        values[String(row.status)] = Number(row.n);
+      }
+      return values;
+    },
     counts() {
       const values = Object.fromEntries(inboxMessageStatus.options.map((status) => [status, 0]));
       for (const row of sql('SELECT status,count(*) AS n FROM codex_session_messages GROUP BY status').all()) {
