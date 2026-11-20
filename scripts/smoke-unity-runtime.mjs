@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { cpSync, mkdirSync, mkdtempDisposableSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempDisposableSync, renameSync, symlinkSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir, tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -14,9 +14,11 @@ import { localDevice } from '../apps/hub/dist/authorization-context.js';
 import { unityRuntime } from '../apps/hub/dist/unity-runtime.js';
 import { executeApprovedTurn } from '../apps/hub/dist/codex-runtime.js';
 import { gitDelivery } from '../apps/hub/dist/git-delivery.js';
+import { initializeUnityArtifactRoot } from '../packages/unity-adapter/dist/index.js';
 
 using fixture = mkdtempDisposableSync(join(tmpdir(), 'devhub-unity-runtime-'));
 const phase = process.argv[2] ?? 'A';
+const fixtureScene = phase === 'D' ? 'Assets/场景.v2/山河（夜） - 試練, A.unity' : 'Assets/Automation.unity';
 const root = fixture.path;
 const source = join(root, 'source');
 mkdirSync(join(source, 'ProjectSettings'), { recursive: true });
@@ -62,6 +64,10 @@ if (phase !== 'A') {
 if (['C', 'D', 'E'].includes(phase)) {
   cpSync(fileURLToPath(new URL('./unity-fixture/Assets', import.meta.url)), join(source, 'Assets'), { recursive: true });
 }
+if (phase === 'D') {
+  mkdirSync(join(source, 'Assets', '场景.v2'));
+  for (const suffix of ['', '.meta']) renameSync(join(source, 'Assets', 'Automation.unity' + suffix), join(source, fixtureScene + suffix));
+}
 if (phase === 'E') {
   mkdirSync(join(source, 'Assets', 'Repair'));
   mkdirSync(join(source, 'Assets', 'RepairChecks'));
@@ -94,6 +100,7 @@ const store = openTaskStore(join(root, 'data', 'unity.sqlite'), true);
 const artifactRoot = process.env.DEVHUB_UNITY_SMOKE_ARTIFACTS ? resolve(process.env.DEVHUB_UNITY_SMOKE_ARTIFACTS) : join(root, 'artifacts');
 const service = unityRuntime(store, artifactRoot);
 try {
+  await initializeUnityArtifactRoot(artifactRoot, !process.env.DEVHUB_UNITY_SMOKE_ARTIFACTS);
   async function newTree() {
     const tree = await createCodexWorktree(source, join(root, 'worktrees'));
     store.execution.registerWorktree(tree);
@@ -170,10 +177,11 @@ try {
     assert.equal(result.reports[1].scene.path, 'Assets/Automation.unity');
     assert.ok(result.reports[1].scene.skillTriggered);
   } else if (phase === 'D') {
-    const result = await run({ stage: 'GAME_VIEW', scene: 'Assets/Automation.unity', timeoutSeconds: 160,
+    const result = await run({ stage: 'GAME_VIEW', scene: fixtureScene, timeoutSeconds: 160,
       capture: { width: 960, height: 540, seconds: 3 } });
     assert.equal(result.status, 'COMPLETED', result.diagnostic ?? undefined);
     assert.ok(result.reports[0].scene.skillTriggered);
+    assert.equal(result.reports[0].scene.path, fixtureScene);
     assert.ok(result.artifacts.find((asset) => asset.kind === 'editor-screenshot'));
     assert.ok(result.artifacts.find((asset) => asset.kind === 'editor-recording'));
   } else if (phase === 'E') {

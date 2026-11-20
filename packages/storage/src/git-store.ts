@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import type { GitChange, GitConnection, GitDeliveryApproval, GitDeliveryBinding, GitOperation, GitReview } from '@devhub/contracts';
 import { gitCandidateStaleCodes } from '@devhub/contracts';
 import { immediate } from './migrations.js';
+import { worktreeBusy } from './worktree-lock.js';
 
 export class GitStateError extends Error {
   constructor(readonly code: string) { super(code); }
@@ -167,9 +168,7 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
       return immediate(database, () => {
         const draft = approved(id, input);
         if (draft.phase === 'DELIVERED') return draft;
-        if (sql(`SELECT 1 FROM codex_runs WHERE worktree_id=? AND status IN ('RUNNING','INTERRUPTED')`).get(draft.binding.worktreeId) ||
-            sql('SELECT 1 FROM git_operations WHERE worktree_id=? AND owner IS NOT NULL').get(draft.binding.worktreeId) ||
-            sql("SELECT 1 FROM unity_runs WHERE worktree_id=? AND status IN ('RUNNING','INTERRUPTED')").get(draft.binding.worktreeId)) {
+        if (worktreeBusy(database, draft.binding.worktreeId)) {
           throw new GitStateError('GIT_WORKTREE_BUSY');
         }
         const claim = sql(`UPDATE git_operations SET owner=?,approved_until=NULL,error_code=NULL,updated_at=?
@@ -199,9 +198,7 @@ export function createGitStore(database: DatabaseSync, clock: () => number) {
       });
     },
     busy(worktreeId: string) {
-      return !!sql(`SELECT 1 FROM codex_runs WHERE worktree_id=? AND status IN ('RUNNING','INTERRUPTED')`).get(worktreeId) ||
-        !!sql('SELECT 1 FROM git_operations WHERE worktree_id=? AND owner IS NOT NULL').get(worktreeId) ||
-        !!sql("SELECT 1 FROM unity_runs WHERE worktree_id=? AND status IN ('RUNNING','INTERRUPTED')").get(worktreeId);
+      return worktreeBusy(database, worktreeId);
     },
     recordChange(projectId: string, change: GitChange, reviews?: GitReview[]) {
       immediate(database, () => {

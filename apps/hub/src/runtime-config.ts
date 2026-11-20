@@ -27,10 +27,12 @@ export function readRuntimeConfig() {
   }
   const { DEVHUB_PORT: port, DEVHUB_DB_PATH: filename, DEVHUB_LOG_LEVEL: level } = config.data;
   const databasePath = resolve(workspace, filename);
+  const unityArtifactRoot = resolve(workspace, config.data.DEVHUB_UNITY_ARTIFACT_ROOT);
   return {
     port, databasePath, managedDataDirectory: dirname(databasePath) === resolve(workspace, '.devhub'), level,
     codexHome: config.data.DEVHUB_CODEX_HOME,
     codexWorktreeRoot: resolve(workspace, config.data.DEVHUB_CODEX_WORKTREE_ROOT),
-    unityArtifactRoot: resolve(workspace, config.data.DEVHUB_UNITY_ARTIFACT_ROOT),
+    unityArtifactRoot,
+    managedUnityArtifactDirectory: unityArtifactRoot === resolve(workspace, '.devhub/unity-runs'),
   };
 }

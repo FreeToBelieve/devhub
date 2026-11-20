@@ -2,9 +2,17 @@ import { z } from 'zod';
 
 export const unityVersion = '6000.3.28f1';
 export const unityStageSchema = z.enum(['EDITOR', 'IMPORT', 'EDITMODE', 'PLAYMODE', 'BUILD', 'PLAYER', 'GAME_VIEW', 'PIPELINE']);
+const reservedWindowsName = /^(?:CON|PRN|AUX|NUL|COM[1-9¹²³]|LPT[1-9¹²³])(?:\.|$)/iu;
+
+export const unityScenePathSchema = z.string().max(220).refine((path) => {
+  if (!path.startsWith('Assets/') || !path.endsWith('.unity') || /[\\:*?"<>|\p{Cc}\p{Cs}]/u.test(path)) return false;
+  return path.split('/').every((part) => part && part !== '.' && part !== '..' &&
+    !/[. ]$/.test(part) && !reservedWindowsName.test(part));
+}, 'Expected a relative Unity scene path under Assets.');
+
 export const unityPlanSchema = z.strictObject({
   stage: unityStageSchema,
-  scene: z.string().max(220).regex(/^Assets\/(?:[A-Za-z0-9_ -]+\/)*[A-Za-z0-9_ -]+\.unity$/).optional(),
+  scene: unityScenePathSchema.optional(),
   testFilter: z.string().max(128).regex(/^[A-Za-z_][A-Za-z0-9_.]*$/).optional(),
   timeoutSeconds: z.int().min(5).max(1800),
   capture: z.strictObject({

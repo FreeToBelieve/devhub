@@ -26,6 +26,14 @@ export function windowsPowerShellEnvironment(): NodeJS.ProcessEnv {
   return { ...env, PSModulePath: win32.join(win32.dirname(windowsPowerShellPath()), 'Modules') };
 }
 
+export function windowsAclCommand(script: string, values: NodeJS.ProcessEnv) {
+  return {
+    executable: windowsPowerShellPath(),
+    args: ['-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64')],
+    env: { ...windowsPowerShellEnvironment(), ...values },
+  };
+}
+
 export function allowsLocalRequest(
   host: string | undefined,
   origin: string | undefined,

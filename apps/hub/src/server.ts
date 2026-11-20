@@ -6,6 +6,7 @@ import { createLogger } from '@devhub/logger';
 import { inspectEnvironment } from '@devhub/runner';
 import { allowsLocalRequest } from '@devhub/security';
 import { openTaskStore } from '@devhub/storage';
+import { initializeUnityArtifactRoot } from '@devhub/unity-adapter';
 import { registerAuthorizationApi } from './authorization-api.js';
 import { gitDelivery } from './git-delivery.js';
 import { unityRuntime } from './unity-runtime.js';
@@ -18,6 +19,7 @@ interface ServerOptions {
   dashboardDirectory?: string;
   codexWorktreeRoot?: string;
   unityArtifactRoot?: string;
+  managedUnityArtifactDirectory?: boolean;
   logger?: ReturnType<typeof createLogger>;
   clock?: () => number;
   gitDependencies?: Parameters<typeof gitDelivery>[1];
@@ -52,6 +54,9 @@ export function createServer(options: ServerOptions): FastifyInstance {
     return unityCleanup;
   }
   app.addHook('onReady', async () => {
+    if (options.unityArtifactRoot) {
+      await initializeUnityArtifactRoot(unity.artifacts, options.managedUnityArtifactDirectory === true);
+    }
     await Promise.all([runCleanup(), runUnityCleanup()]);
     cleanupTimer = setInterval(() => void runCleanup(), 1000);
     cleanupTimer.unref();

@@ -3,6 +3,7 @@ import type { DatabaseSync } from 'node:sqlite';
 import { unityRunSchema, unityVersion } from '@devhub/contracts';
 import type { ExecutionRequest, UnityArtifact, UnityReport, UnityRun, UnityStage } from '@devhub/contracts';
 import { immediate } from './migrations.js';
+import { worktreeBusy } from './worktree-lock.js';
 
 const fields = `id,request_id AS requestId,task_id AS taskId,runner_id AS runnerId,worktree_id AS worktreeId,
   base_head_sha AS baseHeadSha,platform,plan,status,phase,pid,process_identity AS processIdentity,
@@ -21,12 +22,14 @@ export function createUnityStore(database: DatabaseSync, clock: () => number) {
   return {
     get,
     reserveWithinClaim(request: ExecutionRequest, workerId: string) {
+      if (!database.isTransaction) throw new Error('UNITY_CLAIM_TRANSACTION_REQUIRED');
       const { binding } = request;
       const scope = binding.scope;
       if (request.status !== 'CLAIMED' || scope.operation !== 'unity.run' ||
           !sql('SELECT 1 FROM codex_worktrees WHERE worktree_id=?').get(binding.worktreeId)) {
         throw new Error('UNITY_APPROVAL_REQUIRED');
       }
+      if (worktreeBusy(database, binding.worktreeId)) throw new Error('UNITY_WORKTREE_BUSY');
       const id = randomUUID();
       const now = clock();
       sql(`INSERT INTO unity_runs(id,request_id,task_id,runner_id,worktree_id,base_head_sha,platform,plan,

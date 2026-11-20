@@ -1,14 +1,19 @@
+import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, open, readdir, realpath, rm } from 'node:fs/promises';
-import { isAbsolute, join, relative, sep } from 'node:path';
+import { lstat, mkdir, open, readFile, readdir, realpath, rm } from 'node:fs/promises';
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
+import { promisify } from 'node:util';
 import type { UnityArtifact } from '@devhub/contracts';
+import { windowsAclCommand } from '@devhub/security';
 
 export const runByteLimit = 2 * 1024 ** 3;
 export const storageByteLimit = 10 * 1024 ** 3;
 export const artifactRetentionMs = 7 * 24 * 60 * 60 * 1000;
 const maximumEntries = 25_000;
 const runIdPattern = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+const exec = promisify(execFile);
+const windows = process.platform === 'win32';
 
 const kinds = {
   'editor.log': ['log', 'text/plain'], 'player.log': ['log', 'text/plain'],
@@ -35,29 +40,71 @@ async function privateRoot(root: string) {
   if ((await lstat(root)).isSymbolicLink()) throw new Error('UNITY_ARTIFACT_UNSAFE');
   const actual = await realpath(root);
   const info = await ordinaryDirectory(actual);
-  if (process.platform !== 'win32' && (info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0)) {
+  if (windows ? !/^[a-z]:\\/i.test(actual) || actual.toLowerCase() !== resolve(root).toLowerCase() :
+    info.uid !== process.getuid?.() || (info.mode & 0o077) !== 0) {
     throw new Error('UNITY_ARTIFACT_UNSAFE');
   }
   return actual;
 }
 
+async function assertWindowsAcl(root: string, child?: string, managed = false) {
+  if (!windows) return;
+  try {
+    const script = await readFile(new URL('../windows/artifact-permissions.ps1', import.meta.url), 'utf8');
+    const { executable, args, env } = windowsAclCommand(script, {
+      DEVHUB_UNITY_ACL_ROOT: root, DEVHUB_UNITY_ACL_CHILD: child ?? '', DEVHUB_UNITY_ACL_MANAGED: managed ? '1' : '0',
+    });
+    await exec(executable, args, { env, timeout: 15_000, windowsHide: true, maxBuffer: 64 * 1024 });
+  } catch {
+    throw new Error('UNITY_ARTIFACT_ACL_UNSAFE');
+  }
+}
+
+export async function initializeUnityArtifactRoot(root: string, managed: boolean) {
+  if (!windows) return;
+  try {
+    if (managed) {
+      const parent = dirname(root);
+      await mkdir(parent, { recursive: true });
+      await privateRoot(parent);
+      await mkdir(root).catch((error: NodeJS.ErrnoException) => { if (error.code !== 'EEXIST') throw error; });
+    }
+    await assertWindowsAcl(await privateRoot(root), undefined, managed);
+  } catch (error) {
+    if (error instanceof Error && error.message === 'UNITY_ARTIFACT_UNSAFE') throw error;
+    throw new Error('UNITY_ARTIFACT_ACL_UNSAFE');
+  }
+}
+
 export async function createRunDirectory(root: string, id: string, project: string) {
   if (!isAbsolute(root) || !runIdPattern.test(id)) throw new Error('UNITY_ARTIFACT_UNSAFE');
-  await mkdir(root, { recursive: true, mode: 0o700 });
+  if (!windows) await mkdir(root, { recursive: true, mode: 0o700 });
   const actual = await privateRoot(root);
   const workspace = await realpath(project);
   if (workspace === actual || pathInside(workspace, actual) || pathInside(actual, workspace)) throw new Error('UNITY_ARTIFACT_UNSAFE');
+  await assertWindowsAcl(actual);
   const directory = join(actual, id);
   await mkdir(directory, { mode: 0o700 });
   await ordinaryDirectory(directory);
+  await assertWindowsAcl(actual, directory);
   return directory;
 }
 
 export async function readArtifact(root: string, id: string, name: string) {
   if (!runIdPattern.test(id) || !Object.hasOwn(kinds, name)) throw new Error('UNITY_ARTIFACT_UNSAFE');
+  return openArtifact(await privateRunDirectory(root, id), name);
+}
+
+async function privateRunDirectory(root: string, id: string) {
+  if (!runIdPattern.test(id)) throw new Error('UNITY_ARTIFACT_UNSAFE');
   const actual = await privateRoot(root);
-  const dir = join(actual, id);
-  await ordinaryDirectory(dir);
+  const directory = join(actual, id);
+  await ordinaryDirectory(directory);
+  await assertWindowsAcl(actual, directory);
+  return directory;
+}
+
+async function openArtifact(dir: string, name: string) {
   const path = join(dir, name);
   const before = await lstat(path, { bigint: true });
   if (!before.isFile() || before.isSymbolicLink() || before.nlink !== 1n) throw new Error('UNITY_ARTIFACT_UNSAFE');
@@ -71,13 +118,12 @@ export async function readArtifact(root: string, id: string, name: string) {
 }
 
 export async function catalogArtifacts(directory: string): Promise<UnityArtifact[]> {
+  const verified = await privateRunDirectory(dirname(directory), relative(dirname(directory), directory));
   const result: UnityArtifact[] = [];
   for (const [name, [kind, mime]] of Object.entries(kinds)) {
-    const info = await lstat(join(directory, name)).catch(() => undefined);
+    const info = await lstat(join(verified, name)).catch(() => undefined);
     if (!info) continue;
-    const root = join(directory, '..');
-    const id = relative(root, directory);
-    const file = await readArtifact(root, id, name);
+    const file = await openArtifact(verified, name);
     try {
       const hash = createHash('sha256');
       for await (const data of file.createReadStream({ autoClose: false })) hash.update(data);
@@ -112,12 +158,16 @@ export async function sweepArtifacts(root: string, candidates: readonly string[]
     throw error;
   });
   if (!actual) return;
+  await assertWindowsAcl(actual);
   const allowed = new Set(candidates);
   for (const entry of await readdir(actual, { withFileTypes: true })) {
     if (!runIdPattern.test(entry.name) || !allowed.has(entry.name) || !entry.isDirectory()) continue;
     const folder = join(actual, entry.name);
     const info = await ordinaryDirectory(folder);
-    if (info.mtimeMs < now - artifactRetentionMs) await rm(folder, { recursive: true, force: true });
+    if (info.mtimeMs < now - artifactRetentionMs) {
+      await assertWindowsAcl(actual, folder);
+      await rm(folder, { recursive: true, force: true });
+    }
   }
 }
 

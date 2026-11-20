@@ -1,13 +1,12 @@
 import { randomUUID } from 'node:crypto';
-import { lstat, realpath } from 'node:fs/promises';
-import { join, resolve } from 'node:path';
+import { resolve } from 'node:path';
 import { executionPolicyVersion } from '@devhub/contracts';
 import type { RunnerClaimInput, UnityPlan, UnityRun } from '@devhub/contracts';
 import { taskSpecDigest } from '@devhub/storage';
 import type { TaskStore } from '@devhub/storage';
 import { sha256 } from '@devhub/security';
 import {
-  catalogArtifacts, createRunDirectory, directoryBytes, inspectUnityEnvironment, pathInside,
+  catalogArtifacts, createRunDirectory, directoryBytes, inspectUnityEnvironment,
   sanitizeUnityText, storageByteLimit, sweepArtifacts, unityConfiguration,
 } from '@devhub/unity-adapter';
 import { inspectCodexWorktree } from './codex-worktree.js';
@@ -51,10 +50,6 @@ export function unityRuntime(store: TaskStore, artifacts: string) {
       if (!task || !runner) throw new UnityStateError('UNITY_CONTEXT_NOT_FOUND');
       if (store.git.busy(input.worktreeId)) throw new UnityStateError('UNITY_WORKTREE_BUSY');
       const workspace = await context(input.worktreeId);
-      if (input.plan.scene) {
-        const scene = await realpath(join(workspace.root, input.plan.scene)).catch(() => null);
-        if (!scene || !pathInside(workspace.root, scene) || !(await lstat(scene)).isFile()) throw new UnityStateError('UNITY_SCENE_MISSING');
-      }
       const config = await unityConfiguration(workspace.root, input.plan);
       if (runner.platform !== config.environment.platform) throw new UnityStateError('UNITY_PLATFORM_MISMATCH');
       return store.execution.createRequest({
@@ -68,7 +63,6 @@ export function unityRuntime(store: TaskStore, artifacts: string) {
       const request = store.execution.getByGrant(claim.grantId);
       const binding = request?.binding;
       if (!binding || binding.scope.operation !== 'unity.run') throw new UnityStateError('UNITY_APPROVAL_REQUIRED');
-      if (store.git.busy(binding.worktreeId)) throw new UnityStateError('UNITY_WORKTREE_BUSY');
       const { plan } = binding.scope;
       const workspace = await context(binding.worktreeId);
       const config = await unityConfiguration(workspace.root, plan);

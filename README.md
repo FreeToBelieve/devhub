@@ -41,6 +41,8 @@ pnpm start
 | `DEVHUB_UNITY_ARTIFACT_ROOT` | 独立运行产物根目录，默认 `.devhub/unity-runs` |
 | `DEVHUB_UNITY_FFMPEG` | 可选的 FFmpeg 可执行文件绝对路径。未配置时从 `PATH` 查找 |
 
+Windows 上，Hub 为默认 Unity 产物目录设置可继承的当前用户 DACL。自定义产物目录须提前创建。目录须允许当前用户继承访问，允许主体限于当前用户、SYSTEM 和内置 Administrators。Hub 在启动时只读校验自定义目录。
+
 默认数据目录 `.devhub` 和 SQLite 文件在 macOS 分别使用 `0700`、`0600`，在 Windows 使用仅当前用户 SID 的受保护 DACL。配置外部路径时，Hub 保留父目录权限并检查其是否适合 SQLite 事务文件。macOS 的数据库和直接父目录须由当前用户所有，且父目录只允许所有者写入。Windows 外部父目录的 Allow ACE 只允许当前用户、SYSTEM 和内置 Administrators。目录及数据库应位于受信任的本机文件系统。路径为链接或权限无法安全应用时，Hub 会停止启动。
 
 Hub 仅监听 `127.0.0.1`，请求使用同一地址和端口。应用可由同一台电脑上的进程访问。日志记录结构化运行信息，任务内容与凭据应分开保存。

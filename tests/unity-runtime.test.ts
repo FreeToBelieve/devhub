@@ -4,7 +4,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
 import { executionScopeSchema, unityPlanSchema } from '../packages/contracts/dist/index.js';
-import { artifactMime, directoryBytes, inspectUnityEnvironment, parseUnityTests, pngDimensions, readArtifact, sanitizeUnityText, unityDiagnostics }
+import { artifactMime, directoryBytes, initializeUnityArtifactRoot, inspectUnityEnvironment, parseUnityTests, pngDimensions,
+  readArtifact, sanitizeUnityText, unityDiagnostics, verifyUnityScene }
   from '../packages/unity-adapter/dist/index.js';
 import { startEditor, waitForEditorReady } from '../apps/runner/dist/unity/process.js';
 import { createServer } from '../apps/hub/dist/server.js';
@@ -31,6 +32,28 @@ describe('Unity Runner controls', () => {
     expect(report).toMatchObject({ projectVersion: '6000.3.27f1', projectLocked: true });
     expect(report.diagnostics).toContain('UNITY_PROJECT_VERSION_MISMATCH');
     expect(report.diagnostics).toContain('UNITY_PROJECT_LOCKED');
+  });
+
+  it('accepts Unicode scene names and verifies the resolved ordinary file within the worktree', async () => {
+    using fixture = mkdtempDisposableSync(join(tmpdir(), 'devhub-unity-scenes-'));
+    const project = join(fixture.path, 'project');
+    const scene = 'Assets/场景.v2/山河（夜） - 試練, A.unity';
+    mkdirSync(join(project, 'Assets', '场景.v2'), { recursive: true });
+    writeFileSync(join(project, scene), '%YAML 1.1\n');
+    expect(unityPlanSchema.parse({ stage: 'BUILD', scene, timeoutSeconds: 30 }).scene).toBe(scene);
+    await expect(verifyUnityScene(project, scene)).resolves.toBeUndefined();
+    for (const invalid of ['/Assets/山河.unity', 'C:/Assets/山河.unity', 'Assets/../山河.unity', 'Assets/./山河.unity',
+      'Assets//山河.unity', 'Assets/Logs./山河.unity', 'Assets/CON.unity', 'Assets/山河:ads.unity', 'Assets/山河\u0085.unity',
+      'Assets/山河\\夜.unity', 'Assets/山河.txt']) {
+      expect(unityPlanSchema.safeParse({ stage: 'BUILD', scene: invalid, timeoutSeconds: 30 }).success).toBe(false);
+    }
+    mkdirSync(join(project, 'Assets', '目录.unity'));
+    await expect(verifyUnityScene(project, 'Assets/目录.unity')).rejects.toThrow('UNITY_SCENE_MISSING');
+    const outside = join(fixture.path, 'outside');
+    mkdirSync(outside);
+    writeFileSync(join(outside, '山河.unity'), '%YAML 1.1\n');
+    symlinkSync(outside, join(project, 'Assets', 'linked'), process.platform === 'win32' ? 'junction' : 'dir');
+    await expect(verifyUnityScene(project, 'Assets/linked/山河.unity')).rejects.toThrow('UNITY_SCENE_MISSING');
   });
 
   it('tracks child process identity and never considers time alone a ready signal', async () => {
@@ -95,21 +118,24 @@ describe('Unity Runner controls', () => {
   it('consumes artifacts by known name only and redacts Unity and provider secrets', async () => {
     using fixture = mkdtempDisposableSync(join(tmpdir(), 'devhub-unity-artifact-'));
     const id = '29a7c836-661a-4c43-b860-96cfef34bb5f';
-    mkdirSync(join(fixture.path, id));
-    const path = join(fixture.path, id, 'editor.log');
+    const root = join(fixture.path, 'artifacts');
+    mkdirSync(root, { mode: 0o700 });
+    await initializeUnityArtifactRoot(root, true);
+    mkdirSync(join(root, id));
+    const path = join(root, id, 'editor.log');
     writeFileSync(path, 'fixture');
-    const file = await readArtifact(fixture.path, id, 'editor.log');
+    const file = await readArtifact(root, id, 'editor.log');
     try { expect(await file.readFile('utf8')).toBe('fixture'); } finally { await file.close(); }
-    await expect(readArtifact(fixture.path, id, '../editor.log')).rejects.toThrow('UNITY_ARTIFACT_UNSAFE');
-    await expect(directoryBytes(fixture.path, 1)).rejects.toThrow('UNITY_ARTIFACT_LIMIT');
+    await expect(readArtifact(root, id, '../editor.log')).rejects.toThrow('UNITY_ARTIFACT_UNSAFE');
+    await expect(directoryBytes(root, 1)).rejects.toThrow('UNITY_ARTIFACT_LIMIT');
     expect(artifactMime('unredacted.raw')).toBeNull();
     const sanitized = sanitizeUnityText('access_token=secret-value\nLicense serial: private-value\nAuthorization: Bearer fixture-id');
     for (const secret of ['secret-value', 'private-value', 'fixture-id']) expect(sanitized).not.toContain(secret);
     if (process.platform !== 'win32') {
-      symlinkSync(path, join(fixture.path, id, 'player.log'));
-      await expect(readArtifact(fixture.path, id, 'player.log')).rejects.toThrow('UNITY_ARTIFACT_UNSAFE');
+      symlinkSync(path, join(root, id, 'player.log'));
+      await expect(readArtifact(root, id, 'player.log')).rejects.toThrow('UNITY_ARTIFACT_UNSAFE');
     }
-  });
+  }, 20000);
 
   it('requires an operator session, matching origin and CSRF on Unity routes', async () => {
     using fixture = mkdtempDisposableSync(join(tmpdir(), 'devhub-unity-api-'));

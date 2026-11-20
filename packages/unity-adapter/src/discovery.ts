@@ -4,9 +4,10 @@ import { access, lstat, readFile, realpath, stat, statfs } from 'node:fs/promise
 import { homedir } from 'node:os';
 import { delimiter, dirname, isAbsolute, join, resolve } from 'node:path';
 import { promisify } from 'node:util';
-import { unityVersion } from '@devhub/contracts';
+import { unityScenePathSchema, unityVersion } from '@devhub/contracts';
 import type { UnityEnvironment, UnityPlan } from '@devhub/contracts';
 import { sha256, windowsPowerShellEnvironment, windowsPowerShellPath } from '@devhub/security';
+import { pathInside } from './artifacts.js';
 
 const exec = promisify(execFile);
 export const unityPolicyVersion = 1;
@@ -105,7 +106,18 @@ export async function inspectUnityEnvironment(project?: string, env = process.en
     license: licenses.some(Boolean) ? 'FILE_PRESENT' : 'UNVERIFIED', graphics, freeBytes, projectLocked, diagnostics };
 }
 
+export async function verifyUnityScene(project: string, scene: string) {
+  if (!unityScenePathSchema.safeParse(scene).success) throw new Error('UNITY_SCENE_MISSING');
+  const root = await realpath(project);
+  const requested = join(root, scene);
+  const actual = await realpath(requested).catch(() => null);
+  if (!actual || !pathInside(root, actual) || !(await lstat(requested).catch(() => null))?.isFile()) {
+    throw new Error('UNITY_SCENE_MISSING');
+  }
+}
+
 export async function unityConfiguration(project: string, plan: UnityPlan) {
+  if (plan.scene) await verifyUnityScene(project, plan.scene);
   const environment = await inspectUnityEnvironment(project);
   if (!environment.editor || !environment.platform || environment.projectVersion !== unityVersion ||
       environment.projectLocked || environment.freeBytes === null || environment.freeBytes < minimumFreeBytes) {

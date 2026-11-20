@@ -1,7 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { closeSync, constants, fchmodSync, fstatSync, lstatSync, mkdirSync, openSync, readFileSync } from 'node:fs';
 import { dirname, resolve } from 'node:path';
-import { windowsPowerShellEnvironment, windowsPowerShellPath } from '@devhub/security';
+import { windowsAclCommand } from '@devhub/security';
 
 const sidecars = ['-journal', '-wal', '-shm'];
 
@@ -62,10 +62,9 @@ function protectPosix(directory: string, managed: boolean, filename: string, rel
 
 function protectWindows(filename: string, managed: boolean, related: string[]) {
   const script = readFileSync(new URL('../windows/database-permissions.ps1', import.meta.url), 'utf8');
-  const result = spawnSync(windowsPowerShellPath(), [
-    '-NoProfile', '-NonInteractive', '-EncodedCommand', Buffer.from(script, 'utf16le').toString('base64'),
-  ], {
-    env: { ...windowsPowerShellEnvironment(), DEVHUB_SQLITE_FILE: filename, DEVHUB_SQLITE_MANAGED_DIR: managed ? '1' : '0' },
+  const { executable, args, env } = windowsAclCommand(script, { DEVHUB_SQLITE_FILE: filename, DEVHUB_SQLITE_MANAGED_DIR: managed ? '1' : '0' });
+  const result = spawnSync(executable, args, {
+    env,
     encoding: 'utf8',
     windowsHide: true,
     timeout: 15000,
