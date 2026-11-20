@@ -1,6 +1,7 @@
 import { spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempDisposableSync, rmdirSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, linkSync, mkdirSync, mkdtempDisposableSync, readFileSync, realpathSync, rmdirSync, statSync,
+  symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { createServer } from '@devhub/hub';
@@ -226,6 +227,11 @@ describe.skipIf(process.platform !== 'win32')('Unity Windows Artifact ACLs', () 
     mkdirSync(root);
     replaceDirectoryDacl(root, privateDacl + '(A;OICI;FA;;;SY)(A;OICI;FA;;;BA)');
     const before = windowsAcl(root);
+    const script = readFileSync(new URL('../packages/unity-adapter/windows/artifact-permissions.ps1', import.meta.url), 'utf8');
+    const { executable, args, env } = windowsAclCommand(script, { DEVHUB_UNITY_ACL_ROOT: realpathSync(root),
+      DEVHUB_UNITY_ACL_CHILD: '', DEVHUB_UNITY_ACL_MANAGED: '0' });
+    const native = spawnSync(executable, args, { env, encoding: 'utf8', timeout: 15000, windowsHide: true });
+    expect(native.status, native.stderr).toBe(0);
     const open = () => createServer({ port, databasePath, managedDataDirectory: true, unityArtifactRoot: root });
     const first = open();
     try {
