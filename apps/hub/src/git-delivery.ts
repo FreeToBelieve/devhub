@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { realpath } from 'node:fs/promises';
 import { join } from 'node:path';
-import type { GitChange, GitDeliveryBinding, GitDeliveryInput, GitOperation, GitProjectInput } from '@devhub/contracts';
+import type { GitChange, GitCheck, GitDiffFile, GitReview, GitDeliveryBinding, GitDeliveryInput, GitOperation, GitProjectInput } from '@devhub/contracts';
 import {
   applyDeliveryCommit, checkLocalGitRemote, createDeliveryCommit, gitCredentials, gitTransport,
   inspectCandidate, localGitIdentity, prepareDeliveryBranch,
@@ -13,6 +13,8 @@ import { GitStateError, projectContextDigest, taskSpecDigest } from '@devhub/sto
 import type { TaskStore } from '@devhub/storage';
 import { createCodexWorktree, inspectCodexWorktree } from './codex-worktree.js';
 import { projectWorkspace } from './project-context.js';
+
+type ChangeReads = { change: GitChange; diff: GitDiffFile[]; reviews: GitReview[]; checks: GitCheck[] };
 
 interface Dependencies {
   credentials: () => Promise<GitCredentialManager>;
@@ -263,6 +265,21 @@ export function gitDelivery(tasks: TaskStore, dependencies: Dependencies = defau
         errorCode = safeGitError(error);
         throw error;
       } finally { store.release(id, owner, actor, errorCode); }
+    },
+    async inspectChange<Part extends keyof ChangeReads>(projectId: string, number: number, part: Part): Promise<ChangeReads[Part]> {
+      knownChange(projectId, number);
+      const { provider, connection, token } = await credential(projectId);
+      const reads: { [Key in keyof ChangeReads]: () => Promise<ChangeReads[Key]> } = {
+        change: () => provider.getPullRequest(number),
+        diff: () => provider.getPullRequestDiff(number),
+        reviews: () => provider.listPullRequestComments(number),
+        checks: async () => provider.getChecks(await provider.getPullRequest(number)),
+      };
+      const result = await reads[part]();
+      checkConnection(projectId, connection.version);
+      // Provider-controlled fields cannot reflect the active credential back to a Bridge client.
+      return JSON.parse(JSON.stringify(result, (_key, value: unknown) =>
+        typeof value === 'string' ? value.replaceAll(token, '[REDACTED]') : value)) as ChangeReads[Part];
     },
     async details(projectId: string, number: number) {
       knownChange(projectId, number);

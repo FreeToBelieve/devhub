@@ -38,6 +38,9 @@
     },
     {
       "path": "../../packages/unity-adapter"
+    },
+    {
+      "path": "../../packages/mcp-contracts"
     }
   ]
 }

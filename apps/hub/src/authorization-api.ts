@@ -1,5 +1,7 @@
 import type { FastifyInstance, FastifyReply, FastifyRequest } from 'fastify';
 import { z } from 'zod';
+import { registerMcpApi } from './mcp-api.js';
+import { mcpReads } from './mcp-reads.js';
 import {
   decisionInputSchema, developerNetworkModeSchema, digestSchema, executionBindingSchema, executionPolicyVersion, localProofSchema,
   createTaskSchema, legacyProjectId, requestKeySchema, reviseTaskSchema, taskIdSchema, versionInputSchema,
@@ -77,7 +79,7 @@ export interface AuthorizationRoutes {
 }
 
 export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore, port: number, clock: () => number,
-  git: ReturnType<typeof gitDelivery>, unity: ReturnType<typeof unityRuntime>, codexWorktreeRoot?: string) {
+  git: ReturnType<typeof gitDelivery>, unity: ReturnType<typeof unityRuntime>, codexWorktreeRoot?: string, mcpTimeout?: number) {
   const execution = tasks.execution;
   const route = (method: 'GET' | 'POST' | 'PUT' | 'DELETE', url: string, handler: (
     request: FastifyRequest<{ Params: { id: string } }>, reply: FastifyReply,
@@ -260,6 +262,7 @@ export function registerAuthorizationApi(app: FastifyInstance, tasks: TaskStore,
     return reply.code(204).send();
   });
   const routes = { route, session, parse, input, key, project };
+  registerMcpApi(app, routes, tasks, mcpReads(tasks, git, unity), clock, mcpTimeout);
   registerProjectApi(routes, tasks, codexWorktreeRoot);
   registerGitApi(routes, tasks, git, codexWorktreeRoot);
   registerUnityApi(routes, tasks, unity);

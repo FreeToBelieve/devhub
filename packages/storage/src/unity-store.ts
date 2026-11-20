@@ -42,9 +42,9 @@ export function createUnityStore(database: DatabaseSync, clock: () => number) {
           binding.platform, JSON.stringify(scope.plan), workerId, now, now, request.projectId, scope.editorVersion ?? legacyUnityEditorVersion);
       return get(id)!;
     },
-    list(projectId = legacyProjectId) {
+    list(projectId = legacyProjectId, refresh = true) {
       const now = clock();
-      sql("UPDATE unity_runs SET status='INTERRUPTED', finished_at=?, diagnostic='UNITY_WORKER_HEARTBEAT_EXPIRED' WHERE status='RUNNING' AND heartbeat_at<=?")
+      if (refresh) sql("UPDATE unity_runs SET status='INTERRUPTED', finished_at=?, diagnostic='UNITY_WORKER_HEARTBEAT_EXPIRED' WHERE status='RUNNING' AND heartbeat_at<=?")
         .run(now, now - 15_000);
       return sql('SELECT ' + fields + ' FROM unity_runs WHERE project_id=? ORDER BY started_at DESC, rowid DESC LIMIT 100')
         .all(projectId).map((row) => decode(row)!);
