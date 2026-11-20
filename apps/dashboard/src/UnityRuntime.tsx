@@ -1,10 +1,12 @@
 import { useEffect, useState } from 'react';
 import type { FormEvent } from 'react';
 import {
-  executionRequestSchema, operatorSessionSchema, unityEnvironmentSchema, unityRunSchema, unityStageSchema,
+  executionRequestSchema, operatorSessionSchema, unityEnvironmentSchema, unityReviewRunSchema, unityStageSchema,
+  unityEvidenceContentType, unityEvidenceFiles, unityEvidenceHeader, unityEvidenceManifestLimit,
+  unityEvidenceManifestSchema, unityEvidenceRunSchema,
 } from '@devhub/contracts';
 import type {
-  CodexRun, ExecutionRequest, RunnerRecord, Task, UnityEnvironment, UnityRun, UnityStage, WorktreeRecord,
+  CodexRun, ExecutionRequest, RunnerRecord, Task, UnityArtifact, UnityEnvironment, UnityReviewRun, UnityStage, WorktreeRecord,
 } from '@devhub/contracts';
 import { scopedRequest } from './api.js';
 
@@ -15,7 +17,7 @@ const stages: Record<UnityStage, string> = {
 };
 const results = { RUNNING: '运行中', COMPLETED: '完成', FAILED: '失败', CANCELLED: '已取消', INTERRUPTED: '退出未确认' };
 const identity = <T,>() => ({ parse: (value: unknown) => value as T });
-const decoded = (value: unknown) => ({ runs: (value as { runs: unknown[] }).runs.map((run) => unityRunSchema.parse(run)) });
+const decoded = (value: unknown) => ({ runs: (value as { runs: unknown[] }).runs.map((run) => unityReviewRunSchema.parse(run)) });
 type Catalog = { tasks: Task[]; runners: RunnerRecord[]; worktrees: (WorktreeRecord & { codexManaged: boolean })[] };
 
 export function UnityRuntime({ projectId }: { projectId: string }) {
@@ -25,7 +27,7 @@ export function UnityRuntime({ projectId }: { projectId: string }) {
   const [worktreeId, setWorktreeId] = useState('');
   const [environment, setEnvironment] = useState<UnityEnvironment>();
   const [stage, setStage] = useState<UnityStage>('IMPORT');
-  const [runs, setRuns] = useState<UnityRun[]>([]);
+  const [runs, setRuns] = useState<UnityReviewRun[]>([]);
   const [requests, setRequests] = useState<ExecutionRequest[]>([]);
   const [codex, setCodex] = useState<CodexRun[]>([]);
   const [prompt, setPrompt] = useState('');
@@ -119,6 +121,42 @@ export function UnityRuntime({ projectId }: { projectId: string }) {
         capture: settings } }, executionRequestSchema), '申请已生成，请审查范围后批准。');
   }
 
+  function submitEvidence(event: FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const form = event.currentTarget;
+    const data = new FormData(form);
+    const manifestFile = data.get('manifest');
+    const selectedFiles = data.getAll('artifacts');
+    void action(async () => {
+      if (!(manifestFile instanceof File) || manifestFile.size > unityEvidenceManifestLimit) {
+        throw new Error('请选择有效的证据清单。');
+      }
+      const manifest = unityEvidenceManifestSchema.parse(JSON.parse(await manifestFile.text()));
+      if (manifest.projectId !== projectId) throw new Error('清单项目和当前项目不一致。');
+      const files = new Map(selectedFiles.flatMap((value) => value instanceof File ? [[value.name, value] as const] : []));
+      const expected = unityEvidenceFiles(manifest);
+      if (files.size !== expected.length || selectedFiles.length !== expected.length) throw new Error('请选择清单中的全部产物。');
+      const body = new Blob([new Uint8Array(unityEvidenceHeader(manifest)), ...expected.map(({ name, size }) => {
+        const file = files.get(name);
+        if (!file || file.size !== size) throw new Error('产物名称或大小与清单不符。');
+        return file;
+      })]);
+      await request('/api/unity/evidence/import', unityEvidenceRunSchema, {
+        method: 'POST', headers: { 'Content-Type': unityEvidenceContentType, 'X-CSRF-Token': csrf }, body,
+      });
+      form.reset();
+    }, '外部采集证据已导入。');
+  }
+
+  function preview(runId: string, artifact: UnityArtifact, caption: string) {
+    const url = '/api/unity/runs/' + runId + '/artifact?name=' + encodeURIComponent(artifact.name) + '&projectId=' + encodeURIComponent(projectId);
+    if (artifact.mime === 'image/png') return <figure key={artifact.name}><img src={url} alt={caption} loading="lazy" />
+      <figcaption>{caption}</figcaption></figure>;
+    if (artifact.mime === 'video/mp4') return <figure key={artifact.name}><video src={url} controls preload="metadata" />
+      <figcaption>{caption}</figcaption></figure>;
+    return <p key={artifact.name}><a href={url} download={artifact.name}>{caption}</a></p>;
+  }
+
   if (!catalog) return <div className="panel empty">{error ? <a href="#authorization">{error}</a> : '正在读取 Unity 运行环境…'}</div>;
   return <div className="unity-runtime">
     {error && <p className="alert inset" role="alert">{error}</p>}{status && <p className="notice" role="status">{status}</p>}
@@ -174,9 +212,29 @@ export function UnityRuntime({ projectId }: { projectId: string }) {
       </div>)}
     </section>
     <section className="panel">
+      <div className="panel-heading"><h2>导入外部采集证据</h2></div>
+      <form className="form" onSubmit={submitEvidence}>
+        <label>证据清单（JSON）<input type="file" name="manifest" accept=".json,application/json" required /></label>
+        <label>清单中的 PNG、MP4、Console 和报告<input type="file" name="artifacts" multiple required /></label>
+        <label><input type="checkbox" required /> 我已核对采集来源、提交和场景，并批准归档到当前项目。</label>
+        <button className="button" disabled={busy}>导入证据</button>
+      </form>
+    </section>
+    <section className="panel">
       <div className="panel-heading"><h2>运行报告</h2></div>
       {!runs.length && <p className="empty">暂无 Unity 运行。</p>}
-      {runs.map((run) => <details key={run.id} className="unity-run" open={run.status === 'RUNNING' || undefined}>
+      {runs.map((run) => 'source' in run ? <details key={run.id} className="unity-run">
+        <summary>外部采集 · {run.scene} · {new Date(run.capturedAt).toLocaleString()}</summary>
+        <p>Run <code>{run.id}</code> · Git <code>{run.commit}</code> · {run.editorVersion} · {run.width} × {run.height}</p>
+        <p>{run.captureSource} · 清单 SHA-256 <code>{run.manifestSha256}</code></p>
+        {run.skills.map((skill) => <div key={skill.id}>
+          <h3>{skill.name}</h3>
+          {run.artifacts.filter(({ name }) => name.startsWith(skill.id + '__'))
+            .map((artifact) => preview(run.id, artifact, skill.name + ' · ' + artifact.name.split('__')[1]))}
+        </div>)}
+        {run.artifacts.filter(({ kind }) => kind === 'log' || kind === 'report')
+          .map((artifact) => preview(run.id, artifact, artifact.name))}
+      </details> : <details key={run.id} className="unity-run" open={run.status === 'RUNNING' || undefined}>
         <summary>{stages[run.plan.stage]} · {results[run.status]} · {new Date(run.startedAt).toLocaleString()}</summary>
         <p>Run <code>{run.id}</code> · {run.plan.scene ?? run.version}</p>
         <p>{run.phase ? stages[run.phase] : '等待 Runner'}{run.pid && ' · PID ' + run.pid}{run.diagnostic && ' · ' + run.diagnostic}</p>
@@ -191,15 +249,10 @@ export function UnityRuntime({ projectId }: { projectId: string }) {
           {report.build && <p>{report.build.target} · {report.build.size.toLocaleString()} B · SHA-256 <code>{report.build.sha256}</code></p>}
           {report.scene && <p>{report.scene.path} · 帧 {report.scene.frames} · {report.scene.skillTriggered ? '技能已触发' : '技能未触发'}</p>}
         </div>)}
-        {run.exitConfirmed && run.artifacts.map((artifact) => {
-          const url = '/api/unity/runs/' + run.id + '/artifact?name=' + encodeURIComponent(artifact.name) + '&projectId=' + encodeURIComponent(projectId);
-          if (artifact.mime === 'image/png') return <figure key={artifact.name}>
-            <img src={url} alt={artifact.kind === 'editor-screenshot' ? 'Unity Editor Game View' : '独立 Player'} loading="lazy" />
-            <figcaption>{artifact.kind === 'editor-screenshot' ? 'Editor Game View' : '独立 Player'}</figcaption></figure>;
-          if (artifact.mime === 'video/mp4') return <figure key={artifact.name}><video src={url} controls preload="metadata" />
-            <figcaption>{artifact.kind === 'editor-recording' ? 'Editor Game View 录屏' : '独立 Player 录屏'}</figcaption></figure>;
-          return <p key={artifact.name}><a href={url} download={artifact.name}>{artifact.name}</a></p>;
-        })}
+        {run.exitConfirmed && run.artifacts.map((artifact) => preview(run.id, artifact, artifact.mime === 'image/png'
+          ? artifact.kind === 'editor-screenshot' ? 'Editor Game View' : '独立 Player'
+          : artifact.mime === 'video/mp4' ? artifact.kind === 'editor-recording' ? 'Editor Game View 录屏' : '独立 Player 录屏'
+          : artifact.name))}
         {run.status === 'COMPLETED' && <p><a href="#gitlab">打开 Git 管理，审查候选 Tree</a></p>}
         {run.status === 'FAILED' && run.exitConfirmed && <form className="form" onSubmit={(event) => {
           event.preventDefault();

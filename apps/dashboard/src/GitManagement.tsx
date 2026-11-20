@@ -85,6 +85,7 @@ export function GitManagement({ project }: { project: Project }) {
   const read = <T,>(path: string, options?: RequestInit) => request(path, { parse: (value) => value as T }, options);
   const [csrf, setCsrf] = useState('');
   const [catalog, setCatalog] = useState<Catalog>();
+  const [remote, setRemote] = useState<string | null>(null);
   const [operations, setOperations] = useState<Operations>();
   const [branches, setBranches] = useState<GitBranch[]>();
   const [details, setDetails] = useState<Details>();
@@ -96,6 +97,9 @@ export function GitManagement({ project }: { project: Project }) {
   const [ready, setReady] = useState(false);
   const [renew, setRenew] = useState(false);
   const connection = catalog?.connections.find((item) => item.projectId === selected);
+  const repository = connection?.repositoryUrl ?? remote;
+  const detectedProvider = remote && (remote.startsWith('https://github.com/') ? 'github' : 'gitlab');
+  const connectionProvider = connection?.provider ?? detectedProvider;
   const query = '?projectId=' + encodeURIComponent(selected);
 
   useEffect(() => {
@@ -104,6 +108,11 @@ export function GitManagement({ project }: { project: Project }) {
       try {
         const { csrfToken } = await request('/api/operator/session', operatorSessionSchema, { signal: abort.signal });
         const data = await read<Catalog>('/api/git/connections', { signal: abort.signal });
+        const projectDetails = project.repositoryRoot && !data.connections.some((item) => item.projectId === selected)
+          ? await read<{ remote: string | null }>('/api/projects/' + selected, { signal: abort.signal }).catch(() => null)
+          : null;
+        if (abort.signal.aborted) return;
+        setRemote(projectDetails?.remote ?? null);
         setCsrf(csrfToken);
         setCatalog(data);
       } catch {
@@ -177,23 +186,27 @@ export function GitManagement({ project }: { project: Project }) {
           await refreshCatalog();
         }, '连接状态已刷新。')}>撤销凭据</button>
       </div>}
-      {project.repositoryRoot && project.status === 'ACTIVE' && (!connection?.connected || renew) && <form className="form" key={connection?.projectId ?? 'new'} onSubmit={(event) => submit(event, async (data) => {
+      {project.repositoryRoot && project.status === 'ACTIVE' && (!connection?.connected || renew) && <form className="task-form" key={connection?.projectId ?? 'new'} onSubmit={(event) => submit(event, async (data) => {
         const apiBaseUrl = formValue(data, 'api');
         await write<GitConnection>('/api/git/connections', {
           projectId: selected, expectedVersion: connection?.version ?? 0,
-          provider: connection?.provider ?? formValue(data, 'provider'),
-          repositoryUrl: connection?.repositoryUrl ?? formValue(data, 'repository'),
+          provider: connectionProvider ?? formValue(data, 'provider'),
+          repositoryUrl: repository ?? formValue(data, 'repository'),
           apiBaseUrl: connection?.apiBaseUrl || apiBaseUrl || undefined, token: formValue(data, 'token'),
         }, 'PUT');
         await refreshCatalog();
         setRenew(false);
       }, '仓库连接已验证。')}>
-        {!connection && <>
-          <label>Provider<select name="provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option></select></label>
+        {repository ? <p className="git-connection-target"><strong>{connectionProvider === 'github' ? 'GitHub' : 'GitLab'}</strong>
+          <code>{repository}</code></p> : <>
+          <label>Git 服务<select name="provider"><option value="github">GitHub</option><option value="gitlab">GitLab</option></select></label>
           <label>仓库 HTTPS URL<input name="repository" type="url" required /></label>
-          <label>自定义 API Base URL<input name="api" type="url" /></label>
         </>}
         <label>访问令牌<input name="token" type="password" autoComplete="off" spellCheck={false} required /></label>
+        {!connection && detectedProvider !== 'github' && <details className="git-connection-options">
+          <summary>高级设置</summary>
+          <label>自定义 API Base URL<input name="api" type="url" placeholder="默认按仓库地址推导" /></label>
+        </details>}
         <button className="button primary" disabled={busy}>验证并保存到系统凭据库</button>
       </form>}
     </Panel>

@@ -10,7 +10,7 @@ import { sha256 } from '@devhub/security';
 const exec = promisify(execFile);
 const isolatedConfig = fileURLToPath(new URL('../config/readonly.gitconfig', import.meta.url));
 
-async function git(root: string, args: string[], ignoreExitOne = false): Promise<string> {
+async function git(root: string, args: string[], ignoreExitOne = false, timeoutMs = 8000): Promise<string> {
   const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.toUpperCase().startsWith('GIT_')));
   try {
     const result = await exec('git', [
@@ -22,7 +22,7 @@ async function git(root: string, args: string[], ignoreExitOne = false): Promise
         ...env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: isolatedConfig, GIT_TERMINAL_PROMPT: '0',
         GIT_NO_LAZY_FETCH: '1', GIT_NO_REPLACE_OBJECTS: '1',
       },
-      timeout: 8000,
+      timeout: timeoutMs,
       maxBuffer: 4 * 1024 * 1024,
       windowsHide: true,
     });
@@ -101,7 +101,7 @@ export async function inspectWorktree(path: string, scope?: ExecutionScope, allo
 }
 
 export async function addDetachedWorktree(repository: string, destination: string, head: string) {
-  await git(repository, ['-c', 'core.hooksPath=' + isolatedConfig, 'worktree', 'add', '--detach', '--', destination, head]);
+  await git(repository, ['-c', 'core.hooksPath=' + isolatedConfig, 'worktree', 'add', '--detach', '--', destination, head], false, 60_000);
 }
 
 export async function repositoryRemote(root: string): Promise<string | null> {

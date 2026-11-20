@@ -55,7 +55,7 @@ export function registerMcpApi(app: FastifyInstance, routes: AuthorizationRoutes
     const proof = mcpCredentialSchema.safeParse(header.slice(7));
     const pairing = proof.success ? tasks.mcp.authenticate(sha256(proof.data)) : undefined;
     if (!pairing) throw new McpReadError('MCP_UNAUTHENTICATED', 401);
-    if (pairing.revokedAt !== null || pairing.expiresAt <= clock()) throw new McpReadError('MCP_PAIRING_INACTIVE', 401);
+    if (pairing.revokedAt !== null || (pairing.expiresAt !== null && pairing.expiresAt <= clock())) throw new McpReadError('MCP_PAIRING_INACTIVE', 401);
     return pairing;
   }
 

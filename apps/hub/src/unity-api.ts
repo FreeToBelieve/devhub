@@ -1,14 +1,26 @@
 import { z } from 'zod';
-import { digestSchema, runnerClaimInputSchema, unityPlanSchema } from '@devhub/contracts';
+import { Readable } from 'node:stream';
+import type { FastifyInstance } from 'fastify';
+import { digestSchema, runnerClaimInputSchema, unityArtifactsAvailable, unityEvidenceContentType, unityPlanSchema } from '@devhub/contracts';
 import type { TaskStore } from '@devhub/storage';
 import { readArtifact } from '@devhub/unity-adapter';
 import type { AuthorizationRoutes } from './authorization-api.js';
 import { UnityStateError } from './unity-runtime.js';
 import type { unityRuntime } from './unity-runtime.js';
+import { createUnityEvidenceImporter } from './unity-evidence.js';
 
 const requestSchema = z.strictObject({ taskId: z.uuid(), runnerId: z.uuid(), worktreeId: digestSchema, plan: unityPlanSchema });
-export function registerUnityApi(routes: AuthorizationRoutes, tasks: TaskStore, unity: ReturnType<typeof unityRuntime>) {
+export function registerUnityApi(app: FastifyInstance, routes: AuthorizationRoutes, tasks: TaskStore, unity: ReturnType<typeof unityRuntime>) {
   const { route, session, input, parse, key, project } = routes;
+  const importEvidence = createUnityEvidenceImporter(tasks, unity.artifacts);
+  app.addContentTypeParser(unityEvidenceContentType, (_request, payload, done) => done(null, payload));
+  route('POST', '/api/unity/evidence/import', async (request, reply) => {
+    const actor = session(request, true);
+    const selected = tasks.projects.require(project(request).id, true, true);
+    if (!(request.body instanceof Readable)) throw new UnityStateError('UNITY_EVIDENCE_CONTENT_TYPE');
+    const run = await importEvidence(request.body, selected, actor.digest, request.headers['content-length']);
+    return reply.code(201).send(run);
+  });
   route('GET', '/api/unity/environment', (request) => {
     session(request);
     const { worktreeId } = parse(z.strictObject({ worktreeId: digestSchema.optional(), projectId: z.uuid().optional() }), request.query);
@@ -16,7 +28,7 @@ export function registerUnityApi(routes: AuthorizationRoutes, tasks: TaskStore, 
   });
   route('GET', '/api/unity/runs', (request) => {
     session(request);
-    return { runs: tasks.unity.list(project(request).id) };
+    return { runs: unity.reviewRuns(project(request).id) };
   });
   route('POST', '/api/unity/requests', (request) => {
     const actor = session(request, true);
@@ -40,10 +52,10 @@ export function registerUnityApi(routes: AuthorizationRoutes, tasks: TaskStore, 
   });
   route('GET', '/api/unity/runs/:id/artifact', async (request, reply) => {
     session(request);
-    const run = tasks.unity.get(parse(z.uuid(), request.params.id), project(request).id);
+    const run = unity.reviewRun(parse(z.uuid(), request.params.id), project(request).id);
     const { name } = parse(z.strictObject({ name: z.string().max(100), projectId: z.uuid().optional() }), request.query);
     const artifact = run?.artifacts.find((item) => item.name === name);
-    if (!run || !artifact || !run.exitConfirmed) throw new UnityStateError('UNITY_RUN_NOT_FOUND');
+    if (!run || !artifact || !unityArtifactsAvailable(run)) throw new UnityStateError('UNITY_RUN_NOT_FOUND');
     const file = await readArtifact(unity.artifacts, run.id, name).catch(() => undefined);
     if (!file) throw new UnityStateError('UNITY_RUN_NOT_FOUND');
     if (artifact.mime !== 'image/png' && artifact.mime !== 'video/mp4') {

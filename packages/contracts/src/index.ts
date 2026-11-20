@@ -51,3 +51,5 @@ export * from './git-delivery.js';
 
 export * from './unity.js';
 export * from './project.js';
+
+export * from './unity-evidence.js';

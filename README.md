@@ -4,7 +4,16 @@
 
 ## 启动
 
-在仓库根目录执行。需要 Node.js 24 LTS、pnpm 11.25.0 和 Git。可用 `node -v` 和 `pnpm -v` 核对当前终端的版本。
+先安装 [Node.js 24 LTS](https://nodejs.org/en/download) 和 [Git](https://git-scm.com/downloads)。打开新的终端，运行 `node -v`，确认显示 `v24.x` 后安装锁定版本的 pnpm 并克隆 DevHub。
+
+```sh
+npm install --global pnpm@11.25.0
+git clone https://github.com/FreeToBelieve/devhub.git
+cd devhub
+pnpm -v
+```
+
+确认终端使用 Node.js `24.x` 和 pnpm `11.25.0`。以下命令从仓库根目录执行。
 
 Doctor 支持 Windows 11 客户端（build 22000 起）和 macOS 13.5 起的 x64、arm64 运行环境。Windows 通过 PowerShell CIM 读取系统版本和产品类型，Windows Server 会报告不符合桌面环境要求。macOS 版本门槛与 [Node.js 24 预编译包要求](https://nodejs.org/en/blog/migrations/v22-to-v24) 一致。
 
@@ -49,7 +58,9 @@ Hub 仅监听 `127.0.0.1`，请求使用同一地址和端口。应用可由同�
 
 ## 注册和切换项目
 
-先运行 `pnpm authorization bootstrap`，在 Dashboard「授权中心」登录，再进入「项目管理」。录入本地 Git 仓库根目录和 Unity 工程相对路径。Unity 位于仓库根目录时填 `.`。同一仓库的多个工程使用各自的子目录、Worktree 和授权。程序以 `ProjectSettings/ProjectVersion.txt` 读取所需版本，并检查对应的 Editor 和 Build Support。缺少匹配版本时可以保存项目登记，运行会等待安装。
+保持 Hub 运行，在第二个本机交互式终端从仓库根目录执行 `pnpm authorization bootstrap`。在 Dashboard「授权中心」输入一次性凭据，再进入「项目管理」。录入本地 Git 仓库根目录和 Unity 工程相对路径。Unity 位于仓库根目录时填 `.`。同一仓库的多个工程使用各自的子目录、Worktree 和授权。程序以 `ProjectSettings/ProjectVersion.txt` 读取所需版本，并检查对应的 Editor 和 Build Support。缺少匹配版本时仍可登记，运行前须补齐。
+
+选中已登记项目，点击「新建任务」。只做 Codex 或 Unity 本地运行时，可在项目页点击「创建独立 Worktree」。要交付 PR/MR，在「Git 管理」配置远端后创建交付分支及其 Worktree，再用这棵树执行任务。
 
 从页面顶部切换项目。任务、授权、Codex、Unity、Git 和规范随选择切换，已有后台运行继续完成。项目设置可登记工程内 Markdown 规范、修改配置或归档。项目路径和版本修改后，旧的执行审批须重新申请。历史记录归入可确认的 Git 项目或 Legacy / Unassigned，歧义见项目页迁移报告。[技术设计](project_work/requirement_docs/sprint-2-multi-project.md) · [验收报告](project_work/test_case/sprint-2-multi-project.md)
 
@@ -72,15 +83,14 @@ Hub 仅监听 `127.0.0.1`，请求使用同一地址和端口。应用可由同�
 
 ## 本地执行授权
 
-先完成构建。从本机交互式终端登记 Runner 和一个受信任、已提交且干净的 Git 工作树，再签发有效期五分钟的一次性启动凭据。Hub 和授权命令使用同一份 `.env` 与 SQLite 文件。
+构建后，在本机交互式终端登记 Runner。Hub 和授权命令使用同一份 `.env` 与 SQLite 文件。启动凭据有效期五分钟，过期后可重新签发。
 
 ```sh
 pnpm authorization runner-register "本机 Runner"
-pnpm authorization worktree-register <project-id> "/path/to/linked/worktree"
 pnpm authorization bootstrap
 ```
 
-从 Dashboard 的「授权中心」输入启动凭据。登录后选择任务、Runner 和工作树，填写 Thread ID 与白名单范围，提交并审查申请。批准的记录会显示授予 ID、请求版本和绑定摘要。以下命令通过父子进程间的本机 IPC 领取授权并返回审计回执。
+从 Dashboard 的「授权中心」输入启动凭据。已有受信任的 linked worktree 时，可用 `pnpm authorization worktree-register PROJECT_ID WORKTREE_PATH` 登记给基础授权操作，把参数替换为项目页的 ID 和真实路径。选择任务、Runner 和工作树，填写 Thread ID 与操作范围，提交并审查申请。批准记录会显示授予 ID、请求版本和绑定摘要。以下命令通过本机父子进程 IPC 领取基础操作的授权回执。
 
 ```text
 pnpm authorization runner-claim <runner-id> <grant-id> <version> <binding-digest> <idempotency-key>
@@ -94,22 +104,48 @@ pnpm authorization runner-claim <runner-id> <grant-id> <version> <binding-digest
 
 ## Codex Developer Runtime
 
-使用独立的私有 Codex 登录目录，通过现有 Codex CLI 的网页登录流程登录。将同一目录设置为 `DEVHUB_CODEX_HOME`。该目录用于认证与 SDK Thread 历史，配置文件与扩展留在日常 Codex profile 中。
+安装 [Codex CLI](https://developers.openai.com/codex/cli/)，用独立私有目录登录 ChatGPT。以下示例用于首次创建目录。已有专用目录时直接检查其登录和权限。认证和 SDK Thread 历史存放在这个目录。
+
+macOS 使用终端。
+
+```sh
+profile="$HOME/.devhub-codex"
+mkdir -m 700 "$profile" && (
+  export CODEX_HOME="$profile"
+  codex -c 'cli_auth_credentials_store="file"' login
+  test -f "$profile/auth.json" && chmod 600 "$profile/auth.json"
+  codex -c 'cli_auth_credentials_store="file"' login status
+)
+```
+
+Windows 使用 PowerShell。
+
+```powershell
+$profilePath = Join-Path $env:LOCALAPPDATA 'ShanHeDevHub\codex'
+New-Item -ItemType Directory -Path $profilePath -ErrorAction Stop | Out-Null
+$sid = [System.Security.Principal.WindowsIdentity]::GetCurrent().User.Value
+icacls $profilePath /inheritance:r /grant:r "*${sid}:(OI)(CI)F"
+if ($LASTEXITCODE -ne 0) { throw 'Could not protect the DevHub Codex directory' }
+$previousCodexHome = $env:CODEX_HOME
+try {
+  $env:CODEX_HOME = $profilePath
+  codex -c 'cli_auth_credentials_store="file"' login
+  codex -c 'cli_auth_credentials_store="file"' login status
+} finally {
+  $env:CODEX_HOME = $previousCodexHome
+}
+```
+
+将专用目录的绝对路径写到 DevHub 本机 `.env` 的 `DEVHUB_CODEX_HOME`，再重启 Hub。目录路径可放入配置，认证文件本身留在私有目录。
 
 macOS 要求目录与 `auth.json` 归当前用户所有，通常分别设置为 `0700` 和 `0600`。Windows 检查目录及认证文件 ACL，访问主体限于当前用户、SYSTEM 和内置管理员组。DevHub 只校验用户设置的权限。
 
 如果模型服务需要本机 HTTP 代理，可显式设置 `DEVHUB_CODEX_PROVIDER_PROXY` 为带端口的 `http://127.0.0.1` 地址。代理只用于模型服务传输。工具网络保持关闭，进程环境中的代理变量需要通过该配置明确选择。
 
-```sh
-pnpm build
-pnpm authorization runner-register "本机 Runner"
-pnpm codex-runtime worktree-create <project-id>
-```
-
-在 Dashboard 的「授权中心」选择受管工作树和 Runner，发起并批准「Codex 新 Thread」或「Codex 恢复 Thread」。`PROJECT_DEVELOPER` 允许在当前项目目录中读写，开发网络默认关闭。选择 `DEVELOPER_ALLOWLIST` 时，Codex 可通过受控工具下载公共 UPM、npm 和 GitHub 依赖。Shell 的网络保持关闭。将审批时使用的同一份 UTF-8 提示词交给终端命令的标准输入。换行也属于摘要输入。Windows PowerShell 可用 `Get-Content -Raw` 配合 UTF-8 输入管道，或直接从 CMD 重定向文件。
+创建或选择当前项目的受管 Worktree。在 Dashboard 的「授权中心」选择任务、工作树和 Runner，发起并批准「Codex 新 Thread」或「Codex 恢复 Thread」。`PROJECT_DEVELOPER` 允许在当前项目目录中读写，开发网络默认关闭。选择 `DEVELOPER_ALLOWLIST` 时，Codex 可通过受控工具下载公共 UPM、npm 和 GitHub 依赖。Shell 的网络保持关闭。将审批时使用的同一份 UTF-8 提示词交给终端命令的标准输入。换行也属于摘要输入。Windows 可从 CMD 用下例重定向文件。将大写占位参数替换成审批回执里的授予 ID、版本、绑定摘要，以及为本次领取生成的唯一幂等键。幂等键可用 macOS 的 `uuidgen` 或 PowerShell 的 `[guid]::NewGuid()` 生成。
 
 ```text
-pnpm codex-runtime run <grant-id> <version> <binding-digest> <idempotency-key> < prompt.txt
+pnpm codex-runtime run GRANT_ID VERSION BINDING_DIGEST IDEMPOTENCY_KEY < prompt.txt
 ```
 
 Dashboard 的「Codex 执行」增量读取脱敏事件和诊断，可请求取消。终端中也可按 Ctrl+C。每个新 Turn 和权限变化都需要新批准。运行时使用预授权策略。工作树发生中断且无法确认进程已退出时，保留工作树锁和审计记录，新的任务可通过 Git Adapter 创建另一工作树。
@@ -134,7 +170,7 @@ macOS 可在授权中心为本次 Turn 选择 `DEVELOPER_CONNECT`，运行受控
 
 ## GitHub 和 GitLab 交付
 
-首次配置使用独立测试仓库。登录授权中心后，打开「Git 管理」，登记仓库 HTTPS URL 和该项目的令牌。GitHub 使用目标仓库的 Contents 与 Pull requests 读写、Checks 与 Commit statuses 读取权限。GitLab 需要 MR API 访问和 Git 写入权限。自建 GitLab 可设置例如 `https://gitlab.example.com:9998/api/v4` 的 API Base URL，使用与仓库相同的 HTTPS origin、可验证的证书和公网 IPv4 或 IPv6 DNS。撤销按钮清理当前 DevHub 的系统凭据引用和条目，服务端令牌可在 Provider 设置中吊销。
+首次配置使用独立测试仓库。登录授权中心后打开「Git 管理」。DevHub 从已登记项目的本地 Git 仓库读取 HTTPS 远端并选择 Provider，通常只需填写访问令牌。无法读取 HTTPS 远端时，可手工输入。GitHub 使用目标仓库的 Contents 与 Pull requests 读写、Checks 与 Commit statuses 读取权限。GitLab 需要 MR API 访问和 Git 写入权限。自建 GitLab 默认使用仓库站点的 `/api/v4`，包括自定义端口；只有 API 路径不同时，才在「高级设置」填写同源 API Base URL。撤销按钮清理当前 DevHub 的系统凭据引用和条目，服务端令牌可在 Provider 设置中吊销。
 
 直连不稳定时可在 Hub 中显式设置 `DEVHUB_GIT_HTTPS_PROXY=http://127.0.0.1:7890`，指向操作员信任的本机 CONNECT 代理。默认由 DevHub 逐次解析并固定公网 IP，在隧道内校验原主机的 TLS 证书。
 
@@ -153,9 +189,10 @@ macOS 可在授权中心为本次 Turn 选择 `DEVELOPER_CONNECT`，运行受控
 pnpm typecheck
 pnpm test
 pnpm build
+pnpm run doctor
 ```
 
-GitHub Actions 使用 Windows Server x64 与 macOS arm64 运行锁定依赖安装、类型检查、Vitest 和构建。Windows Server 作业验证原生 ACL 和构建，Windows 11 桌面仍需单独验收。
+GitHub Actions 使用 Windows Server x64 与 macOS arm64 运行锁定依赖安装、类型检查、Vitest 和构建。Windows Server 作业验证原生 ACL 和构建，Windows 11 桌面仍需单独验收。macOS 记录以实际使用的 Editor、机器架构、签名及启动结果为准。详见 [V1 发布验收报告](project_work/test_case/v1-release-acceptance.md)。
 
 加固范围和授权中心接口见 [Sprint 2.1 设计](project_work/requirement_docs/sprint-2-hardening.md)。验收路径和平台覆盖见 [Sprint 2.1 测试记录](project_work/test_case/sprint-2-hardening.md)。
 
