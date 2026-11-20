@@ -365,8 +365,10 @@ describe('one Host and concurrent task sessions', () => {
       store.inbox.disconnect(f.owner, true);
       expect(store.inbox.accept(afterDisconnect)).toBe(true);
       expect(store.inbox.messages(item.sessionId)[0]?.status).toBe('PENDING');
+      const heartbeatAt = store.codex.get(active)?.heartbeatAt;
+      if (heartbeatAt == null) throw new Error('The claiming worker did not persist a heartbeat.');
       store.close();
-      now += 16_000;
+      now = heartbeatAt + 16_000;
       store = openTaskStore(filename, true, () => now);
       const owner = sha256('restart owner');
       const host = store.inbox.acquire(owner, f.runner);
