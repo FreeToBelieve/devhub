@@ -150,7 +150,7 @@ export function UnityRuntime({ projectId }: { projectId: string }) {
 
   function preview(runId: string, artifact: UnityArtifact, caption: string) {
     const url = '/api/unity/runs/' + runId + '/artifact?name=' + encodeURIComponent(artifact.name) + '&projectId=' + encodeURIComponent(projectId);
-    if (artifact.mime === 'image/png') return <figure key={artifact.name}><img src={url} alt={caption} loading="lazy" />
+    if (artifact.mime === 'image/png' || artifact.mime === 'image/jpeg') return <figure key={artifact.name}><img src={url} alt={caption} loading="lazy" />
       <figcaption>{caption}</figcaption></figure>;
     if (artifact.mime === 'video/mp4') return <figure key={artifact.name}><video src={url} controls preload="metadata" />
       <figcaption>{caption}</figcaption></figure>;
@@ -249,7 +249,7 @@ export function UnityRuntime({ projectId }: { projectId: string }) {
           {report.build && <p>{report.build.target} · {report.build.size.toLocaleString()} B · SHA-256 <code>{report.build.sha256}</code></p>}
           {report.scene && <p>{report.scene.path} · 帧 {report.scene.frames} · {report.scene.skillTriggered ? '技能已触发' : '技能未触发'}</p>}
         </div>)}
-        {run.exitConfirmed && run.artifacts.map((artifact) => preview(run.id, artifact, artifact.mime === 'image/png'
+        {run.exitConfirmed && run.artifacts.map((artifact) => preview(run.id, artifact, (artifact.mime === 'image/png' || artifact.mime === 'image/jpeg')
           ? artifact.kind === 'editor-screenshot' ? 'Editor Game View' : '独立 Player'
           : artifact.mime === 'video/mp4' ? artifact.kind === 'editor-recording' ? 'Editor Game View 录屏' : '独立 Player 录屏'
           : artifact.name))}

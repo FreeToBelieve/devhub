@@ -38,6 +38,15 @@ export async function findFfmpeg(env = process.env) {
   const name = process.platform === 'win32' ? 'ffmpeg.exe' : 'ffmpeg';
   const configured = env.DEVHUB_UNITY_FFMPEG;
   if (configured) return isAbsolute(configured) ? executable(configured) : null;
+  return findOnPath(name, env);
+}
+
+export async function findFfprobe(ffmpeg: string, env = process.env) {
+  const name = process.platform === 'win32' ? 'ffprobe.exe' : 'ffprobe';
+  return await executable(join(dirname(ffmpeg), name)) ?? findOnPath(name, env);
+}
+
+async function findOnPath(name: string, env: NodeJS.ProcessEnv) {
   for (const directory of (env.PATH ?? '').split(delimiter)) {
     if (!isAbsolute(directory)) continue;
     const found = await executable(join(directory, name));

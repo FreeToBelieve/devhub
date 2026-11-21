@@ -5,7 +5,7 @@ import {
 } from '@modelcontextprotocol/sdk/types.js';
 import type { CallToolResult, Tool } from '@modelcontextprotocol/sdk/types.js';
 import {
-  mcpCapabilitiesSchema, mcpOutputSchema, mcpResponseLimit, mcpTimeoutMs, mcpTools, mcpToolSchema, mcpToolNames,
+  mcpCallTimeout, mcpCapabilitiesSchema, mcpOutputSchema, mcpResponseLimit, mcpTimeoutMs, mcpTools, mcpToolSchema, mcpToolNames,
 } from '@devhub/mcp-contracts';
 import type { McpOutput, McpTool, McpTunnel } from '@devhub/mcp-contracts';
 import { z } from 'zod';
@@ -17,9 +17,9 @@ export class BridgeError extends Error {
 }
 
 export type HubClient = ReturnType<typeof createHubClient>;
-export function createHubClient(port: number, credential: string, timeout = mcpTimeoutMs + 1_000) {
-  async function post(path: 'probe' | 'read', body: unknown, signal?: AbortSignal): Promise<unknown> {
-    const deadline = AbortSignal.timeout(timeout);
+export function createHubClient(port: number, credential: string, timeout?: number) {
+  async function post(path: 'probe' | 'read', body: unknown, signal?: AbortSignal, limitMs = mcpTimeoutMs): Promise<unknown> {
+    const deadline = AbortSignal.timeout(timeout ?? limitMs + 1_000);
     try {
       const response = await loopback(port, '/api/mcp/internal/' + path, {
         method: 'POST', signal: signal ? AbortSignal.any([deadline, signal]) : deadline,
@@ -43,7 +43,7 @@ export function createHubClient(port: number, credential: string, timeout = mcpT
       return mcpCapabilitiesSchema.parse(await post('probe', { transport, protocolVersion, tunnel }));
     },
     async read(tool: McpTool, input: unknown, signal?: AbortSignal) {
-      return mcpOutputSchema.parse(await post('read', { tool, input }, signal));
+      return mcpOutputSchema.parse(await post('read', { tool, input }, signal, mcpCallTimeout(tool)));
     },
   };
 }
@@ -58,10 +58,18 @@ export const toolDescriptors = mcpToolNames.map((name): Tool => ({
 function toolResult(result: McpOutput): CallToolResult {
   const data = { data: result.data };
   const text = { type: 'text', text: JSON.stringify(data) } as const;
-  const media = result.media?.mimeType === 'image/png'
-    ? [{ type: 'image' as const, mimeType: result.media.mimeType, data: result.media.data }]
-    : [];
-  return { structuredContent: data, content: [...media, text] };
+  const content: CallToolResult['content'] = [text];
+  if (result.media && result.media.mimeType !== 'video/mp4') content.unshift({ type: 'image', ...result.media });
+  for (const { caption, mimeType, data: bytes } of result.images ?? []) {
+    content.push({ type: 'text', text: caption }, { type: 'image', mimeType, data: bytes });
+  }
+  if (result.resource) {
+    content.push({ type: 'resource_link', ...result.resource });
+    if (result.media?.mimeType === 'video/mp4') {
+      content.push({ type: 'resource', resource: { uri: result.resource.uri, mimeType: 'video/mp4', blob: result.media.data } });
+    }
+  }
+  return { structuredContent: data, content };
 }
 
 export function createMcpServer(hub: HubClient, transport: 'stdio' | 'http') {

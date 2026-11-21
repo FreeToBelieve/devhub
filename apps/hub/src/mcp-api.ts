@@ -3,11 +3,11 @@ import { z } from 'zod';
 import { generateLocalProof, sha256 } from '@devhub/security';
 import type { TaskStore } from '@devhub/storage';
 import {
-  mcpCredentialSchema, mcpPairInput, mcpProbeSchema, mcpRequestLimit,
-  mcpResponseLimit, mcpTimeoutMs, mcpToolNames, mcpToolSchema, mcpTools,
+  mcpCallTimeout, mcpCredentialSchema, mcpPairInput, mcpProbeSchema, mcpRequestLimit,
+  mcpResponseLimit, mcpToolNames, mcpToolSchema, mcpTools,
 } from '@devhub/mcp-contracts';
 import type { AuthorizationRoutes } from './authorization-api.js';
-import { McpReadError } from './mcp-reads.js';
+import { McpReadError } from './mcp-errors.js';
 import type { mcpReads } from './mcp-reads.js';
 
 const readInput = z.strictObject({ tool: mcpToolSchema, input: z.unknown() });
@@ -16,7 +16,7 @@ const callLimit = 120;
 const concurrencyLimit = 4;
 
 export function registerMcpApi(app: FastifyInstance, routes: AuthorizationRoutes, tasks: TaskStore,
-  read: ReturnType<typeof mcpReads>, clock: () => number, timeout = mcpTimeoutMs) {
+  read: ReturnType<typeof mcpReads>, clock: () => number, timeout?: number) {
   const { route, session, input, parse } = routes;
   const rate = new Map<string, { start: number; used: number; active: number }>();
   const credential = () => 'dhm_' + generateLocalProof();
@@ -98,6 +98,9 @@ export function registerMcpApi(app: FastifyInstance, routes: AuthorizationRoutes
   });
   app.post('/api/mcp/internal/read', { bodyLimit: mcpRequestLimit }, async (request, reply) => {
     let timer: ReturnType<typeof setTimeout> | undefined;
+    const cancellation = new AbortController();
+    const interrupted = () => { if (!reply.raw.writableFinished) cancellation.abort(); };
+    reply.raw.once('close', interrupted);
     try {
       const pairing = authenticate(request);
       const parsed = readInput.safeParse(request.body);
@@ -109,9 +112,13 @@ export function registerMcpApi(app: FastifyInstance, routes: AuthorizationRoutes
       try {
         const entry = budget(pairing.id);
         entry.active++;
-        const work = Promise.resolve().then(() => read(tool, input, pairing)).finally(() => { entry.active--; });
+        const work = Promise.resolve().then(() => read(tool, input, pairing, cancellation.signal)).finally(() => { entry.active--; });
         const result = await Promise.race([work, new Promise<never>((_, reject) => {
-          timer = setTimeout(() => reject(new McpReadError('MCP_TIMEOUT', 504)), timeout);
+          timer = setTimeout(() => {
+            const failure = new McpReadError('MCP_TIMEOUT', 504);
+            reject(failure);
+            cancellation.abort(failure);
+          }, timeout ?? mcpCallTimeout(tool));
         })]);
         authenticate(request);
         const body = JSON.stringify(result);
@@ -126,6 +133,6 @@ export function registerMcpApi(app: FastifyInstance, routes: AuthorizationRoutes
     } catch (error) {
       const failure = safeFailure(error);
       return reply.code(failure.status).send({ code: failure.code });
-    } finally { clearTimeout(timer); }
+    } finally { clearTimeout(timer); reply.raw.off('close', interrupted); }
   });
 }

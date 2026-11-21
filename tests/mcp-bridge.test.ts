@@ -1,6 +1,6 @@
 import { execFileSync } from 'node:child_process';
 import { createHash, randomBytes, randomUUID } from 'node:crypto';
-import { mkdirSync, mkdtempDisposableSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempDisposableSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { createServer as createTcpServer } from 'node:net';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -12,14 +12,15 @@ import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/
 import { createServer } from '@devhub/hub';
 import { createLogger } from '@devhub/logger';
 import { createHubClient } from '@devhub/mcp-server';
-import { mcpIssueSchema, mcpMediaLimit } from '@devhub/mcp-contracts';
-import { afterEach, describe, expect, it } from 'vitest';
+import { mcpIssueSchema, mcpMediaLimit, mcpRecordingInputLimit } from '@devhub/mcp-contracts';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import {
   unityEvidenceContentType, unityEvidenceFiles, unityEvidenceHeader, unityEvidenceManifestSchema, unityEvidenceRunSchema,
 } from '../packages/contracts/dist/index.js';
 import { startHttp } from '../apps/mcp-server/dist/transports.js';
 import { openTaskStore } from '../packages/storage/dist/index.js';
 import { migrate } from '../packages/storage/dist/migrations.js';
+import { findFfmpeg, findFfprobe, runReviewCommand } from '../packages/unity-adapter/dist/index.js';
 import { createRunDirectory } from '../packages/unity-adapter/dist/artifacts.js';
 
 const entry = fileURLToPath(new URL('../apps/mcp-server/dist/main.js', import.meta.url));
@@ -27,6 +28,7 @@ const png = readFileSync(new URL('../project_work/test_case/assets/sprint-2.5-ga
 const mp4 = readFileSync(new URL('../project_work/test_case/assets/sprint-2.5-game-view.mp4', import.meta.url));
 const cleanup: (() => void | Promise<void>)[] = [];
 afterEach(async () => {
+  vi.unstubAllEnvs();
   for (const step of cleanup.splice(0).reverse()) await step();
 });
 
@@ -136,12 +138,23 @@ async function fixture(mcpTimeout?: number) {
     expect(result.statusCode, result.body).toBe(201);
     return mcpIssueSchema.parse(result.json());
   };
+  function publish(name: string, mime: 'image/png' | 'image/jpeg' | 'video/mp4', data: Buffer, declaredSize = data.length) {
+    const item = { name, kind: mime === 'video/mp4' ? 'editor-recording' : 'editor-screenshot', mime, size: declaredSize,
+      sha256: createHash('sha256').update(data).digest('hex'), createdAt: time };
+    writeFileSync(join(runDir, name), data, { mode: 0o600 });
+    const database = new DatabaseSync(databasePath);
+    try {
+      const last = database.prepare('SELECT artifacts FROM unity_runs WHERE id=?').get(runId);
+      database.prepare('UPDATE unity_runs SET artifacts=? WHERE id=?').run(JSON.stringify([...JSON.parse(String(last?.artifacts)), item]), runId);
+    } finally { database.close(); }
+    return catalogId(item);
+  }
   const internal = (auth: string | undefined, tool: string, input: unknown) => app.inject({
     method: 'POST', url: '/api/mcp/internal/read', headers: { host, ...(auth ? { authorization: 'Bearer ' + auth } : {}) },
     payload: { tool, input },
   });
   return { A, B, task, otherTask, runId, artifactId: catalogId(artifact), videoId: catalogId(video), largeVideoId: catalogId(largeRecording), secret,
-    app, port, headers, store, databasePath, logs, issue, internal, advance: (ms: number) => { time += ms; },
+    app, port, headers, store, databasePath, unityArtifactRoot, runDir, logs, issue, internal, publish, advance: (ms: number) => { time += ms; },
     delayCredentials: () => { delayCredential = true; }, releaseCredentials: () => releaseCredential?.(),
     async restart() {
       await app.close();
@@ -161,7 +174,7 @@ describe('MCP Bridge', () => {
     await connect();
     expect(client.getServerVersion()?.name).toBe('ShanHe DevHub');
     const { tools } = await client.listTools();
-    expect(tools).toHaveLength(31);
+    expect(tools).toHaveLength(33);
     expect(tools.every((tool) => tool.annotations?.readOnlyHint && !tool.annotations.destructiveHint)).toBe(true);
     const projects = await client.callTool({ name: 'devhub_list_projects', arguments: {} });
     expect(projects.structuredContent).toMatchObject({ data: { items: [{ id: f.A.id }] } });
@@ -193,7 +206,7 @@ describe('MCP Bridge', () => {
     await client.close();
     await f.restart();
     await connect();
-    expect((await client.listTools()).tools).toHaveLength(31);
+    expect((await client.listTools()).tools).toHaveLength(33);
     expect(await client.ping()).toEqual({});
     f.store.mcp.revoke(pair.pairing.id);
     await expect(client.ping()).rejects.toThrow('MCP_PAIRING_INACTIVE');
@@ -278,7 +291,7 @@ describe('MCP Bridge', () => {
     const client = new Client({ name: 'devhub-http', version: '1' });
     cleanup.push(() => client.close());
     await client.connect(new StreamableHTTPClientTransport(url, { requestInit: { headers: auth } }));
-    expect((await client.listTools()).tools).toHaveLength(31);
+    expect((await client.listTools()).tools).toHaveLength(33);
     const oversized = await fetch(url, {
       method: 'POST', headers: { ...auth, 'Content-Type': 'application/json', Accept: 'application/json, text/event-stream' },
       body: JSON.stringify({ text: 'a'.repeat(32_000) }),
@@ -383,4 +396,129 @@ describe('MCP Bridge', () => {
       expect(db.prepare('PRAGMA foreign_key_check').all()).toEqual([]);
     } finally { db.close(); }
   });
+});
+
+describe('MCP visual recording review', () => {
+  it('returns verified JPEG, rejects incorrect size/MIME/hash and unsafe media', async () => {
+    const f = await fixture();
+    const pair = await f.issue();
+    const scope = { projectId: f.A.id, runId: f.runId };
+    const shot = (artifactId: string) => f.internal(pair.credential, 'devhub_get_unity_screenshot', { ...scope, artifactId });
+    const forged = f.publish('test__invalid.jpg', 'image/jpeg', png);
+    expect((await shot(forged)).statusCode).toBe(422);
+    expect((await shot(f.videoId)).statusCode).toBe(404);
+    expect((await shot('8'.repeat(64))).statusCode).toBe(404);
+    expect((await f.internal(pair.credential, 'devhub_get_unity_screenshot', { ...scope, runId: randomUUID(), artifactId: f.artifactId })).statusCode).toBe(404);
+    const encoder = await findFfmpeg();
+    if (encoder) {
+      const bytes = execFileSync(encoder, ['-v', 'error', '-f', 'png_pipe', '-i', 'pipe:0',
+        '-frames:v', '1', '-threads', '1', '-c:v', 'mjpeg', '-f', 'image2pipe', 'pipe:1'], { input: png, maxBuffer: mcpMediaLimit });
+      const id = f.publish('test__jpeg.jpg', 'image/jpeg', bytes);
+      const photo = await shot(id);
+      expect(photo.statusCode, photo.body.slice(0, 100)).toBe(200);
+      expect(photo.json().media.mimeType).toBe('image/jpeg');
+      expect(Buffer.from(photo.json().media.data, 'base64').equals(bytes)).toBe(true);
+    } else if (process.env.CI) throw new Error('CI must provide FFmpeg.');
+    const modified = Buffer.from(png);
+    modified[modified.length - 3] = modified[modified.length - 3]! ^ 1;
+    writeFileSync(join(f.runDir, 'game-view.png'), modified, { mode: 0o600 });
+    expect((await shot(f.artifactId)).statusCode).toBe(409);
+    if (process.platform === 'darwin') {
+      const id = f.publish('test__symlink.png', 'image/png', png);
+      const escape = join(f.A.repositoryRoot!, 'outside.png');
+      writeFileSync(escape, png);
+      const linked = join(f.runDir, 'test__link.png');
+      symlinkSync(escape, linked);
+      const linkedId = createHash('sha256').update(JSON.stringify([f.A.id, f.runId, 'test__link.png',
+        createHash('sha256').update(png).digest('hex')])).digest('hex');
+      const db = new DatabaseSync(f.databasePath);
+      try {
+        const row = db.prepare('SELECT artifacts FROM unity_runs WHERE id=?').get(f.runId);
+        const values = JSON.parse(String(row?.artifacts));
+        values.at(-1).name = 'test__link.png';
+        db.prepare('UPDATE unity_runs SET artifacts=? WHERE id=?').run(JSON.stringify(values), f.runId);
+      } finally { db.close(); }
+      expect(id).not.toBe(linkedId);
+      expect((await shot(linkedId)).statusCode).toBe(404);
+    }
+  }, 35_000);
+
+  it('returns SDK images with default, explicit and maximum frame counts, and a separate recording blob', async (context) => {
+    const encoder = await findFfmpeg();
+    if (!encoder || !await findFfprobe(encoder)) {
+      if (process.env.CI) throw new Error('CI must provide FFmpeg and FFprobe.');
+      return context.skip();
+    }
+    const f = await fixture();
+    const pair = await f.issue();
+    const client = new Client({ name: 'media-test', version: '1' });
+    cleanup.push(() => client.close());
+    await client.connect(new StdioClientTransport({ command: process.execPath, args: [entry, 'start', 'stdio'],
+      env: { DEVHUB_PORT: String(f.port), DEVHUB_MCP_PAIRING: pair.credential, PATH: process.env.PATH ?? '' }, stderr: 'pipe' }));
+    const scope = { projectId: f.A.id, runId: f.runId, artifactId: f.videoId };
+    const sample = (extra: Record<string, unknown> = {}) => client.callTool({ name: 'devhub_get_unity_recording_review_frames',
+      arguments: { ...scope, ...extra } }, undefined, { timeout: 45_000 });
+    const result = await sample();
+    expect(result.isError, JSON.stringify(result.content).slice(0, 140)).not.toBe(true);
+    const images = Array.isArray(result.content) ? result.content.filter(({ type }) => type === 'image') : [];
+    expect(images).toHaveLength(8);
+    expect(images.every((image) => image.mimeType === 'image/jpeg' &&
+      Buffer.from(image.data, 'base64').subarray(0, 3).toString('hex') === 'ffd8ff')).toBe(true);
+    expect(result.structuredContent).toMatchObject({ data: { integrity: 'verified', video: {
+      width: expect.any(Number), height: expect.any(Number), fps: expect.any(Number), durationSeconds: expect.any(Number),
+    }, timeline: expect.arrayContaining([{ frameIndex: 1, requestedSeconds: expect.any(Number), timestampSeconds: expect.any(Number),
+      originalResolution: expect.any(Object), imageResolution: expect.any(Object), durationSeconds: expect.any(Number),
+      dark: expect.any(Boolean), duplicate: expect.any(Boolean) }]) } });
+    const ordered = await sample({ timestamps: [0, 0.2, 0.4] });
+    expect(ordered.structuredContent).toMatchObject({ data: { timeline: [
+      expect.objectContaining({ requestedSeconds: 0, timestampSeconds: 0 }),
+      expect.objectContaining({ requestedSeconds: 0.2, timestampSeconds: expect.any(Number) }),
+      expect.objectContaining({ requestedSeconds: 0.4, timestampSeconds: expect.any(Number) }),
+    ] } });
+    const full = await sample({ sampleCount: 12 });
+    expect(Array.isArray(full.content) && full.content.filter(({ type }) => type === 'image')).toHaveLength(12);
+    expect((await sample({ sampleCount: 13 })).isError).toBe(true);
+    expect((await sample({ timestamps: [899] })).isError).toBe(true);
+    const summary = await client.callTool({ name: 'devhub_review_unity_recording', arguments: { ...scope, sampleCount: 2 } });
+    expect(summary.structuredContent).toMatchObject({ data: { stageScreenshots: [{ integrity: 'verified' }],
+      commit: 'f'.repeat(40), scene: 'Assets/Fixture.unity', unityVersion: '6000.3.28f1' } });
+    expect(Array.isArray(summary.content) && summary.content.filter(({ type }) => type === 'image')).toHaveLength(3);
+    const recording = await client.callTool({ name: 'devhub_get_unity_recording_resource', arguments: scope });
+    expect(Array.isArray(recording.content) && recording.content.map(({ type }) => type)).toEqual(['text', 'resource_link', 'resource']);
+    const range = await f.app.inject({ method: 'GET', headers: { ...f.headers, 'x-devhub-project-id': f.A.id, range: 'bytes=0-23' },
+      url: '/api/unity/runs/' + f.runId + '/artifact?name=game-view.mp4' });
+    expect(range.statusCode).toBe(206);
+    expect(range.rawPayload.equals(mp4.subarray(0, 24))).toBe(true);
+    expect(readdirSync(f.unityArtifactRoot).filter(name => name.startsWith('.mcp-media-'))).toEqual([]);
+    expect(JSON.stringify(f.logs)).not.toContain(mp4.toString('base64').slice(0, 50));
+  }, 90_000);
+
+  it('enforces media scope, global decoder budget and bounded failure cleanup', async (context) => {
+    const encoder = await findFfmpeg();
+    if (!encoder || !await findFfprobe(encoder)) {
+      if (process.env.CI) throw new Error('CI must provide FFmpeg and FFprobe.');
+      return context.skip();
+    }
+    const f = await fixture();
+    const [a, b, c] = await Promise.all([f.issue(), f.issue(), f.issue()]);
+    const scope = { projectId: f.A.id, runId: f.runId, artifactId: f.videoId };
+    const frames = (credential: string, input: Record<string, unknown> = {}) =>
+      f.internal(credential, 'devhub_get_unity_recording_review_frames', { ...scope, ...input });
+    expect((await frames(a!.credential, { projectId: f.B.id })).statusCode).toBe(403);
+    const allowed = await f.issue([f.A.id, f.B.id], ['unity']);
+    expect((await frames(allowed.credential, { projectId: f.B.id })).statusCode).toBe(404);
+    expect((await frames(a!.credential, { artifactId: f.publish('test__huge.mp4', 'video/mp4', mp4, mcpRecordingInputLimit + 1) })).statusCode)
+      .toBe(413);
+    const truncated = mp4.subarray(0, 32);
+    const invalid = await frames(a!.credential, { artifactId: f.publish('test__corrupt.mp4', 'video/mp4', truncated) });
+    expect(invalid.statusCode).toBe(422);
+    const outcome = await Promise.all([a!, b!, c!].map((pairing) => frames(pairing.credential)));
+    expect(outcome.map((response) => response.statusCode).sort()).toEqual([200, 200, 429]);
+    expect(outcome.find((response) => response.statusCode === 429)?.json().code).toBe('MCP_MEDIA_BUSY');
+    expect(readdirSync(f.unityArtifactRoot).filter(name => name.startsWith('.mcp-media-'))).toEqual([]);
+    vi.stubEnv('DEVHUB_UNITY_FFMPEG', join(f.runDir, 'missing'));
+    expect((await frames(a!.credential)).statusCode).toBe(503);
+    await expect(runReviewCommand(process.execPath, ['-e', 'setTimeout(() => {}, 30000)'],
+      undefined, undefined, 150)).rejects.toMatchObject({ code: 'TIMEOUT' });
+  }, 90_000);
 });

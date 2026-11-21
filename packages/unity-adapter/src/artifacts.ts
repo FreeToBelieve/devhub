@@ -1,7 +1,7 @@
 import { execFile } from 'node:child_process';
 import { constants } from 'node:fs';
 import { createHash } from 'node:crypto';
-import { lstat, mkdir, open, readFile, readdir, realpath, rm } from 'node:fs/promises';
+import { lstat, mkdir, mkdtemp, open, readFile, readdir, realpath, rm } from 'node:fs/promises';
 import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path';
 import { promisify } from 'node:util';
 import type { UnityArtifact } from '@devhub/contracts';
@@ -30,6 +30,8 @@ const kinds = {
 function artifactKind(name: string): readonly [UnityArtifact['kind'], UnityArtifact['mime']] | null {
   if (Object.hasOwn(kinds, name)) return kinds[name as keyof typeof kinds];
   if (/^[a-z][a-z0-9-]{0,39}__[a-zA-Z0-9_-]{1,48}\.png$/.test(name)) return ['editor-screenshot', 'image/png'];
+  if (/^(?:game-view|[a-z][a-z0-9-]{0,39}__[a-zA-Z0-9_-]{1,48})\.jpe?g$/.test(name)) return ['editor-screenshot', 'image/jpeg'];
+  if (/^player\.jpe?g$/.test(name)) return ['player-screenshot', 'image/jpeg'];
   if (/^[a-z][a-z0-9-]{0,39}__[a-zA-Z0-9_-]{1,48}\.mp4$/.test(name)) return ['editor-recording', 'video/mp4'];
   return null;
 }
@@ -113,6 +115,18 @@ export async function createRunDirectory(root: string, id: string, project: stri
 export async function readArtifact(root: string, id: string, name: string) {
   if (!runIdPattern.test(id) || !artifactKind(name)) throw new Error('UNITY_ARTIFACT_UNSAFE');
   return openArtifact(await privateRunDirectory(root, id), name);
+}
+
+export async function withArtifactScratch<T>(root: string, use: (directory: string) => Promise<T>) {
+  const actual = await privateRoot(root);
+  const directory = await mkdtemp(join(actual, '.mcp-media-'));
+  try {
+    await ordinaryDirectory(directory);
+    await assertWindowsAcl(actual, directory);
+    return await use(directory);
+  } finally {
+    await rm(directory, { recursive: true, force: true });
+  }
 }
 
 async function privateRunDirectory(root: string, id: string) {

@@ -58,7 +58,7 @@ export function registerUnityApi(app: FastifyInstance, routes: AuthorizationRout
     if (!run || !artifact || !unityArtifactsAvailable(run)) throw new UnityStateError('UNITY_RUN_NOT_FOUND');
     const file = await readArtifact(unity.artifacts, run.id, name).catch(() => undefined);
     if (!file) throw new UnityStateError('UNITY_RUN_NOT_FOUND');
-    if (artifact.mime !== 'image/png' && artifact.mime !== 'video/mp4') {
+    if (artifact.mime !== 'image/png' && artifact.mime !== 'image/jpeg' && artifact.mime !== 'video/mp4') {
       reply.header('Content-Disposition', `attachment; filename="${artifact.name}"`);
     }
     if (artifact.mime === 'video/mp4') {

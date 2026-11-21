@@ -1,23 +1,20 @@
 import { Buffer } from 'node:buffer';
-import { createHash } from 'node:crypto';
 import { z } from 'zod';
 import type { GitChange, Project, Task, UnityArtifact, UnityEnvironment, UnityReviewRun } from '@devhub/contracts';
 import { unityArtifactsAvailable } from '@devhub/contracts';
 import { containsWorkspaceSecret, isWorkspaceSecretPath, sha256 } from '@devhub/security';
 import type { TaskStore } from '@devhub/storage';
 import { localGitIdentity } from '@devhub/git-adapter';
-import { mcpMediaLimit, mcpTools } from '@devhub/mcp-contracts';
+import { mcpTools } from '@devhub/mcp-contracts';
 import type { McpOutput, McpPair, McpTool } from '@devhub/mcp-contracts';
 import { readArtifact, readRegular, sanitizeUnityText } from '@devhub/unity-adapter';
 import type { unityRuntime } from './unity-runtime.js';
 import type { gitDelivery } from './git-delivery.js';
 import { projectPath, projectWorkspace } from './project-context.js';
 
-export class McpReadError extends Error {
-  constructor(readonly code: string, readonly status = 400) { super(code); }
-}
+import { McpReadError, missing } from './mcp-errors.js';
+import { createMcpMedia, isScreenshot } from './mcp-media.js';
 
-function missing(): never { throw new McpReadError('MCP_NOT_FOUND', 404); }
 function page<T>(items: T[], { offset, limit }: { offset: number; limit: number }) {
   return { items: items.slice(0, limit), nextOffset: items.length > limit ? offset + limit : null };
 }
@@ -59,9 +56,9 @@ function artifactSummary(run: UnityReviewRun, { name, kind, mime, size, sha256: 
   const id = sha256(JSON.stringify([run.projectId, run.id, name, digest]));
   const skillId = 'source' in run ? /^([a-z][a-z0-9-]{0,39})__/.exec(name)?.[1] : undefined;
   const skill = 'source' in run && skillId ? run.skills.find((entry) => entry.id === skillId) : undefined;
-  const resource = mime === 'image/png' ? 'image' : mime === 'video/mp4' ? 'recording' : null;
-  return { id, kind, mime, size, sha256: digest, createdAt,
-    ...(skill ? { skillId: skill.id, skill: publicText(skill.name, 100), file: name } : {}),
+  const resource = isScreenshot(mime) ? 'image' : mime === 'video/mp4' ? 'recording' : null;
+  return { id, kind, mime, size, sha256: digest, createdAt, file: publicText(name, 100),
+    ...(skill ? { skillId: skill.id, skill: publicText(skill.name, 100) } : {}),
     uri: resource ? `devhub://projects/${run.projectId}/unity-runs/${run.id}/artifacts/${id}/${resource}` : null };
 
 }
@@ -71,6 +68,7 @@ function changeSummary(change: GitChange) {
 }
 
 export function mcpReads(tasks: TaskStore, git: ReturnType<typeof gitDelivery>, unity: ReturnType<typeof unityRuntime>) {
+  const media = createMcpMedia(unity.artifacts, artifactSummary, runSummary);
   const describe = (project: Project) => {
     const connection = tasks.git.connection(project.id);
     return {
@@ -92,7 +90,7 @@ export function mcpReads(tasks: TaskStore, git: ReturnType<typeof gitDelivery>, 
       ({ id: sha256(JSON.stringify([project.id, kind, path])), kind, path }));
   }
 
-  async function read(tool: McpTool, rawInput: unknown, pairing: McpPair): Promise<McpOutput> {
+  async function read(tool: McpTool, rawInput: unknown, pairing: McpPair, signal?: AbortSignal): Promise<McpOutput> {
     const definition = mcpTools[tool];
     if (!pairing.groups.includes(definition.group)) throw new McpReadError('MCP_TOOL_FORBIDDEN', 403);
     const parsed = definition.input.safeParse(rawInput);
@@ -196,39 +194,11 @@ export function mcpReads(tasks: TaskStore, git: ReturnType<typeof gitDelivery>, 
         const item = run();
         return { data: unityArtifactsAvailable(item) ? item.artifacts.map((entry) => artifactSummary(item, entry)) : [] };
       }
-      case 'devhub_get_unity_screenshot':
-      case 'devhub_get_unity_recording_metadata':
-      case 'devhub_get_unity_recording_resource': {
-        const item = run();
-        const { artifactId } = input<typeof tool>();
-        const artifact = item.artifacts.find((entry) => artifactSummary(item, entry).id === artifactId);
-        const mime = tool === 'devhub_get_unity_screenshot' ? 'image/png' : 'video/mp4';
-        if (!unityArtifactsAvailable(item) || !artifact || artifact.mime !== mime) missing();
-        const frames = mime === 'video/mp4' ? item.artifacts.filter(({ name, mime: kind }) => kind === 'image/png' &&
-          (!('source' in item) || name.split('__', 1)[0] === artifact.name.split('__', 1)[0]))
-          .map((entry) => artifactSummary(item, entry)) : [];
-        const data = { ...artifactSummary(item, artifact), runId: item.id, recordingResourceAvailable: mime === 'video/mp4' && artifact.size <= mcpMediaLimit,
-          ...(mime === 'video/mp4' ? { reviewFrames: frames } : {}) };
-        if (tool !== 'devhub_get_unity_screenshot' && (tool === 'devhub_get_unity_recording_metadata' || artifact.size > mcpMediaLimit)) {
-          return { data };
-        }
-        if (artifact.size > mcpMediaLimit) throw new McpReadError('MCP_RESPONSE_LIMIT', 413);
-        const file = await readArtifact(unity.artifacts, item.id, artifact.name).catch(() => missing());
-        try {
-          const buffer = Buffer.alloc(artifact.size + 1);
-          let count = 0;
-          while (count < buffer.length) {
-            const { bytesRead } = await file.read(buffer, count, buffer.length - count, count);
-            if (!bytesRead) break;
-            count += bytesRead;
-          }
-          const bytes = buffer.subarray(0, count);
-          const magic = mime === 'image/png' ? bytes.subarray(0, 8).toString('hex') === '89504e470d0a1a0a'
-            : bytes.subarray(4, 8).toString('ascii') === 'ftyp';
-          if (!magic || count !== artifact.size || createHash('sha256').update(bytes).digest('hex') !== artifact.sha256) missing();
-          return { data, media: { mimeType: mime, data: bytes.toString('base64') } };
-        } finally { await file.close(); }
-      }
+      case 'devhub_get_unity_screenshot': return media.screenshot(run(), input<typeof tool>().artifactId, signal);
+      case 'devhub_get_unity_recording_metadata': return media.recording('metadata', run(), input<typeof tool>(), signal);
+      case 'devhub_get_unity_recording_resource': return media.recording('resource', run(), input<typeof tool>(), signal);
+      case 'devhub_get_unity_recording_review_frames': return media.recording('frames', run(), input<typeof tool>(), signal);
+      case 'devhub_review_unity_recording': return media.recording('review', run(), input<typeof tool>(), signal);
       case 'devhub_get_git_status': {
         const { worktreeId } = input<typeof tool>();
         const tree = worktreeId ? tasks.execution.getWorktree(worktreeId, id) : undefined;
