@@ -211,3 +211,11 @@ GitHub Actions 使用 Windows Server x64 与 macOS arm64 运行锁定依赖安�
 ## ChatGPT MCP 集成
 
 在本机 Dashboard 的「MCP 集成」按项目创建只读配对，可查询任务、Codex 执行、Unity 报告及截图、Git 变更和 CI。ChatGPT 连接使用官方 Secure MCP Tunnel，DevHub 保持回环监听。参阅 [连接步骤](docs/MCP_CHATGPT_SETUP.md)、[架构](docs/MCP_ARCHITECTURE.md)、[安全边界](docs/MCP_SECURITY.md) 和 [故障排查](docs/MCP_TROUBLESHOOTING.md)。
+
+## MCP 媒体审查
+
+MCP 视频审查使用同一份 Unity 产物。使用 `devhub_get_unity_screenshot` 获取原图，
+`devhub_get_unity_recording_review_frames` 获取 8 张带时间戳的帧图（最多 12 张），
+`devhub_review_unity_recording` 同时获取阶段截图和 Run 信息。抽帧需要 FFmpeg 与 FFprobe，
+可以自动发现与 FFmpeg 同目录或在 PATH 上的 FFprobe。配对项目需包含 Unity 读取权限。
+原片通过 MCP 资源读取，播放取决于客户端的媒体能力。

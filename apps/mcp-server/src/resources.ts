@@ -17,7 +17,7 @@ const resources = [
   ['documents/{documentId}', 'devhub_read_project_document', 'Registered Markdown page'],
   ['unity-runs/{runId}/report', 'devhub_get_unity_run', 'Unity run report'],
   ['unity-runs/{runId}/artifacts', 'devhub_list_unity_artifacts', 'Unity artifact catalog'],
-  ['unity-runs/{runId}/artifacts/{artifactId}/image', 'devhub_get_unity_screenshot', 'Unity PNG screenshot', 'image/png'],
+  ['unity-runs/{runId}/artifacts/{artifactId}/image', 'devhub_get_unity_screenshot', 'Unity screenshot (PNG or JPEG)'],
   ['unity-runs/{runId}/artifacts/{artifactId}/recording', 'devhub_get_unity_recording_resource', 'Unity MP4 recording (bounded)', 'video/mp4'],
 ] as const satisfies ReadonlyArray<readonly [string, McpTool, string, string?]>;
 

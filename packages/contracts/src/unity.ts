@@ -51,7 +51,7 @@ export const unityReportSchema = z.object({
 });
 export const unityArtifactSchema = z.object({
   name: z.string().max(100), kind: z.enum(['log', 'report', 'test', 'editor-screenshot', 'player-screenshot', 'recording', 'editor-recording']),
-  mime: z.enum(['text/plain', 'application/json', 'application/xml', 'image/png', 'video/mp4']),
+  mime: z.enum(['text/plain', 'application/json', 'application/xml', 'image/png', 'image/jpeg', 'video/mp4']),
   size: z.number().int().nonnegative(), sha256: z.string().regex(/^[a-f0-9]{64}$/), createdAt: z.int(),
 });
 export const unityRunSchema = z.object({

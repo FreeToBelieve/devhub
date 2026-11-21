@@ -8,6 +8,8 @@ export const mcpRequestLimit = 16 * 1024;
 export const mcpResponseLimit = 5 * 1024 * 1024;
 export const mcpMediaLimit = 3 * 1024 * 1024;
 export const mcpTimeoutMs = 8_000;
+export const mcpReviewTimeoutMs = 40_000;
+export const mcpRecordingInputLimit = 64 * 1024 * 1024;
 
 const scope = { projectId: z.uuid() };
 const page = { offset: z.int().nonnegative().max(10_000).default(0), limit: z.int().min(1).max(25).default(10) };
@@ -17,6 +19,8 @@ const list = z.strictObject({ ...scope, ...page });
 const task = z.strictObject({ ...scope, taskId: z.uuid() });
 const run = z.strictObject({ ...scope, runId: z.uuid() });
 const artifact = run.extend({ artifactId: z.string().regex(/^[a-f0-9]{64}$/) });
+const mediaSamples = { sampleCount: z.int().min(1).max(12).default(8) };
+const timedSamples = { ...mediaSamples, timestamps: z.array(z.number().min(0).max(900)).min(1).max(12).optional() };
 const change = project.extend({ number: z.int().positive() });
 const gitDiff = project.extend({ number: z.int().positive().optional(), operationId: z.uuid().optional(), ...page })
   .refine(({ number, operationId }) => Boolean(number) !== Boolean(operationId), 'Provide exactly one change number or operation ID');
@@ -51,6 +55,10 @@ export const mcpTools = {
   devhub_get_unity_screenshot: tool('unity', 'Read a published Unity screenshot as MCP Image Content.', artifact),
   devhub_get_unity_recording_metadata: tool('unity', 'Read Unity recording metadata and related review frames.', artifact),
   devhub_get_unity_recording_resource: tool('unity', 'Read a bounded registered Unity recording resource.', artifact),
+  devhub_get_unity_recording_review_frames: tool('unity', 'Read time-labelled video frames as individual image content. Use timestamps to request specific moments.',
+    artifact.extend(timedSamples)),
+  devhub_review_unity_recording: tool('unity', 'Read Unity recording facts, a frame timeline, stage screenshots and the original recording reference.',
+    artifact.extend(mediaSamples)),
   devhub_get_git_status: tool('git', 'Read Git connection, current branch, HEAD and delivery status for a registered project or worktree.',
     project.extend({ worktreeId: z.string().regex(/^[a-f0-9]{64}$/).optional() })),
   devhub_get_git_diff: tool('git', 'Read a paged registered candidate diff or tracked PR/MR diff.', gitDiff),
@@ -103,7 +111,15 @@ export const mcpCapabilitiesSchema = z.object({
   tools: z.array(mcpToolSchema),
   projectIds: z.array(z.uuid()),
 });
-export const mcpOutputSchema = z.object({ data: z.unknown(), media: z.object({
-  mimeType: z.enum(['image/png', 'video/mp4']), data: z.string(),
-}).optional() });
+export function mcpCallTimeout(tool: McpTool) {
+  return tool === 'devhub_get_unity_recording_metadata' || tool === 'devhub_get_unity_recording_review_frames' ||
+    tool === 'devhub_review_unity_recording' ? mcpReviewTimeoutMs : mcpTimeoutMs;
+}
+
+export const mcpOutputSchema = z.object({
+  data: z.unknown(),
+  media: z.object({ mimeType: z.enum(['image/png', 'image/jpeg', 'video/mp4']), data: z.string() }).optional(),
+  images: z.array(z.object({ caption: z.string(), mimeType: z.enum(['image/png', 'image/jpeg']), data: z.string() })).max(20).optional(),
+  resource: z.object({ uri: z.string(), name: z.string(), mimeType: z.literal('video/mp4'), size: z.int().positive() }).optional(),
+});
 export type McpOutput = z.infer<typeof mcpOutputSchema>;

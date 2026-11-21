@@ -6,3 +6,4 @@ export * from './player.js';
 export * from './capture.js';
 
 export * from './evidence.js';
+export * from './media.js';

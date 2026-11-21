@@ -6,7 +6,7 @@ import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
 import { LATEST_PROTOCOL_VERSION } from '@modelcontextprotocol/sdk/types.js';
 import type { McpTunnel } from '@devhub/mcp-contracts';
-import { mcpRequestLimit, mcpTimeoutMs } from '@devhub/mcp-contracts';
+import { mcpRequestLimit, mcpReviewTimeoutMs } from '@devhub/mcp-contracts';
 import { createMcpServer, BridgeError } from './server.js';
 import type { HubClient } from './server.js';
 
@@ -113,7 +113,7 @@ export async function startHttp(hub: HubClient, credential: string, port: number
     });
   });
   listener.maxConnections = 16;
-  listener.setTimeout(mcpTimeoutMs + 2_000, (socket) => socket.destroy());
+  listener.setTimeout(mcpReviewTimeoutMs + 2_000, (socket) => socket.destroy());
   await new Promise<void>((resolve, reject) => {
     listener.once('error', reject);
     listener.listen(port, '127.0.0.1', resolve);
